@@ -1,12 +1,15 @@
 """LOB Vector 核心包。"""
 
 from .chunking import FixedSizeChunker
+from .embedding import Embedder, HashEmbedder
 from .models import Chunk, Document, Metadata, MetadataValue, SearchResult
 
 __all__ = [
     "Chunk",
     "Document",
+    "Embedder",
     "FixedSizeChunker",
+    "HashEmbedder",
     "Metadata",
     "MetadataValue",
     "SearchResult",

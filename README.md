@@ -67,7 +67,7 @@
 - `pyproject.toml` 管理构建、安装和 CLI 入口
 - 阶段 0 优先使用 Python 标准库，确有向量计算需要时再引入 NumPy
 
-当前已完成基础工程骨架、核心数据模型，以及支持 overlap 和字符位置追踪的固定长度分块。
+当前已完成基础工程骨架、核心数据模型、固定长度分块，以及用于本地验证链路的确定性 Hash Embedding。
 
 初始化环境：
 
@@ -81,6 +81,7 @@ uv sync
 uv run lob-vector --help
 uv run lob-vector --version
 uv run lob-vector chunk ./README.md --chunk-size 500 --overlap 50
+uv run lob-vector embed "什么是向量检索" --dimension 32
 ```
 
 查看附带 Metadata 的分块结果：
@@ -99,7 +100,9 @@ uv run lob-vector chunk ./README.md \
 uv run lob-vector web
 ```
 
-浏览器打开 <http://127.0.0.1:8765>，可以粘贴文本并调整 Chunk Size、Overlap 和 Metadata，页面展示的结果直接来自 Python `FixedSizeChunker`。
+浏览器打开 <http://127.0.0.1:8765>，可以粘贴文本并调整 Chunk Size、Overlap、向量维度和 Metadata。页面展示的分块和向量直接来自 Python `FixedSizeChunker` 与 `HashEmbedder`。
+
+`HashEmbedder` 不具备真实模型的语义理解能力，只用于无网络环境下验证 Embedding、向量归一化和后续检索链路；真实 Embedding 模型将在接口稳定后接入。
 
 ## 第一个里程碑
 

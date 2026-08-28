@@ -9,6 +9,7 @@ from typing import Sequence
 
 from . import __version__
 from .chunking import FixedSizeChunker
+from .embedding import HashEmbedder
 from .models import Document
 from .web import serve
 
@@ -60,6 +61,21 @@ def _web_command(args: argparse.Namespace) -> None:
     serve(host=args.host, port=args.port)
 
 
+def _embed_command(args: argparse.Namespace) -> None:
+    embedder = HashEmbedder(dimension=args.dimension)
+    vectors = embedder.embed(args.text)
+    output = [
+        {
+            "text": text,
+            "dimension": embedder.dimension,
+            "norm": sum(value * value for value in vector) ** 0.5,
+            "vector": vector,
+        }
+        for text, vector in zip(args.text, vectors, strict=True)
+    ]
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="lob-vector",
@@ -95,6 +111,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="附加 Metadata，可重复传入",
     )
     chunk_parser.set_defaults(handler=_chunk_command)
+
+    embed_parser = subparsers.add_parser("embed", help="生成确定性的本地 Hash Embedding")
+    embed_parser.add_argument("text", nargs="+", help="需要转换为向量的文本")
+    embed_parser.add_argument(
+        "--dimension",
+        type=int,
+        default=32,
+        help="向量维度，默认 32",
+    )
+    embed_parser.set_defaults(handler=_embed_command)
 
     web_parser = subparsers.add_parser("web", help="启动可视化分块实验台")
     web_parser.add_argument("--host", default="127.0.0.1", help="监听地址")

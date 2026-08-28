@@ -64,7 +64,7 @@
     <header>
       <div class="eyebrow">LOB Vector / Stage 0</div>
       <h1>分块实验台</h1>
-      <p>观察 Chunk Size 与 Overlap 如何改变文本边界和上下文连续性。</p>
+      <p>观察分块边界，并将每个 Chunk 转换为确定性的归一化向量。</p>
     </header>
     <div class="workspace">
       <section class="panel">
@@ -77,16 +77,17 @@
         <div class="controls">
           <div><label for="size">Chunk Size</label><input id="size" type="number" min="1" value="80"></div>
           <div><label for="overlap">Overlap</label><input id="overlap" type="number" min="0" value="20"></div>
+          <div><label for="dimension">Vector Dimension</label><input id="dimension" type="number" min="1" value="32"></div>
         </div>
         <div class="metadata">
           <label for="metadata">Metadata（JSON）</label>
           <input id="metadata" value='{"source":"web-demo","stage":0}'>
         </div>
-        <button id="run">执行分块</button>
+        <button id="run">分块并生成向量</button>
         <div id="error" class="error"></div>
       </section>
       <section class="panel">
-        <div class="summary"><span>文档 <strong id="length">—</strong> 字符</span><span>生成 <strong id="count">—</strong> 块</span></div>
+        <div class="summary"><span>文档 <strong id="length">—</strong> 字符</span><span>生成 <strong id="count">—</strong> 块</span><span>向量 <strong id="dimensionValue">—</strong> 维</span></div>
         <div id="results" class="results"><div class="empty">点击“执行分块”查看结果</div></div>
       </section>
     </div>
@@ -105,6 +106,7 @@
             text: $('text').value,
             chunk_size: Number($('size').value),
             overlap: Number($('overlap').value),
+            dimension: Number($('dimension').value),
             metadata: JSON.parse($('metadata').value || '{}')
           })
         });
@@ -112,10 +114,13 @@
         if (!response.ok) throw new Error(data.error || '分块失败');
         $('length').textContent = data.document_length;
         $('count').textContent = data.chunk_count;
+        $('dimensionValue').textContent = data.embedding_dimension;
         $('results').innerHTML = data.chunks.map(chunk => `
           <article class="chunk">
             <div class="chunk-head"><b>CHUNK ${chunk.index}</b><span>${chunk.start} → ${chunk.end} · ${chunk.length} 字符</span></div>
             <pre>${escapeHtml(chunk.content)}</pre>
+            <div class="chunk-head"><b>VECTOR</b><span>模长 ${chunk.vector_norm.toFixed(6)}</span></div>
+            <pre>[${chunk.vector.slice(0, 8).map(value => value.toFixed(4)).join(', ')}${chunk.vector.length > 8 ? ', …' : ''}]</pre>
           </article>`).join('');
       } catch (error) {
         $('error').textContent = error.message;

@@ -9,6 +9,7 @@ from importlib.resources import files
 from typing import Any
 
 from .chunking import FixedSizeChunker
+from .embedding import HashEmbedder
 from .models import Document
 
 
@@ -19,10 +20,13 @@ def _chunk(payload: dict[str, Any]) -> dict[str, Any]:
 
     chunk_size = payload.get("chunk_size", 120)
     overlap = payload.get("overlap", 20)
+    dimension = payload.get("dimension", 32)
     if not isinstance(chunk_size, int) or isinstance(chunk_size, bool):
         raise ValueError("chunk_size 必须是整数")
     if not isinstance(overlap, int) or isinstance(overlap, bool):
         raise ValueError("overlap 必须是整数")
+    if not isinstance(dimension, int) or isinstance(dimension, bool):
+        raise ValueError("dimension 必须是整数")
 
     raw_metadata = payload.get("metadata", {})
     if not isinstance(raw_metadata, dict):
@@ -30,9 +34,12 @@ def _chunk(payload: dict[str, Any]) -> dict[str, Any]:
 
     document = Document("web-demo", text, raw_metadata)
     chunks = FixedSizeChunker(chunk_size, overlap).split(document)
+    embedder = HashEmbedder(dimension)
+    vectors = embedder.embed([chunk.content for chunk in chunks])
     return {
         "document_length": len(text),
         "chunk_count": len(chunks),
+        "embedding_dimension": embedder.dimension,
         "chunks": [
             {
                 "id": chunk.id,
@@ -42,8 +49,10 @@ def _chunk(payload: dict[str, Any]) -> dict[str, Any]:
                 "length": len(chunk.content),
                 "content": chunk.content,
                 "metadata": dict(chunk.metadata),
+                "vector": vector,
+                "vector_norm": sum(value * value for value in vector) ** 0.5,
             }
-            for chunk in chunks
+            for chunk, vector in zip(chunks, vectors, strict=True)
         ],
     }
 
