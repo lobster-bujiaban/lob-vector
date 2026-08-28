@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lob-vector"
+version = "0.1.0"
+description = "从零掌握向量检索与 RAG 的学习项目"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [{ name = "lobster-bujiaban" }]
+dependencies = []
+
+[project.scripts]
+lob-vector = "lob_vector.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"lob_vector.static" = ["*.html"]
+
+[tool.uv]
+package = true

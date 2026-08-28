@@ -59,6 +59,48 @@
 
 详细任务和验收标准见 [实施计划](./docs/IMPLEMENTATION_PLAN.md)。
 
+## 技术基线
+
+- Python 3.12+
+- `uv` 管理 Python、虚拟环境、依赖和锁文件
+- `src/lob_vector` 包结构
+- `pyproject.toml` 管理构建、安装和 CLI 入口
+- 阶段 0 优先使用 Python 标准库，确有向量计算需要时再引入 NumPy
+
+当前已完成基础工程骨架、核心数据模型，以及支持 overlap 和字符位置追踪的固定长度分块。
+
+初始化环境：
+
+```bash
+uv sync
+```
+
+运行 CLI：
+
+```bash
+uv run lob-vector --help
+uv run lob-vector --version
+uv run lob-vector chunk ./README.md --chunk-size 500 --overlap 50
+```
+
+查看附带 Metadata 的分块结果：
+
+```bash
+uv run lob-vector chunk ./README.md \
+  --chunk-size 500 \
+  --overlap 50 \
+  --metadata department=engineering \
+  --metadata year=2026
+```
+
+启动可视化分块实验台：
+
+```bash
+uv run lob-vector web
+```
+
+浏览器打开 <http://127.0.0.1:8765>，可以粘贴文本并调整 Chunk Size、Overlap 和 Metadata，页面展示的结果直接来自 Python `FixedSizeChunker`。
+
 ## 第一个里程碑
 
 导入 10 篇本地文档，手写余弦相似度与 Metadata Filter。输入问题后，返回最相关的 3 个 Chunk，并展示：
@@ -96,4 +138,4 @@ lob-vector/
 └── docs/
 ```
 
-具体编程语言和依赖在阶段 0 开始前确定，避免在尚未形成最小闭环时引入过多基础设施。
+阶段 0 使用 Python 实现，并在形成最小闭环前保持依赖精简。
