@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>LOB Vector · 分块实验台</title>
+  <title>LOB Vector · 检索实验台</title>
   <style>
     :root {
       color-scheme: dark;
@@ -47,6 +47,11 @@
       background: var(--accent); color: #07120b; font: 700 14px ui-monospace, monospace;
     }
     button:hover { background: #b0f2c8; }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    button.secondary { background: #26342d; color: var(--text); border: 1px solid var(--line); }
+    button.secondary:hover { background: #32463a; }
+    .query { margin: 14px 0; }
+    .search-controls { display: grid; grid-template-columns: minmax(0, 1fr) 100px; gap: 12px; }
     .summary { display: flex; gap: 18px; margin-bottom: 14px; color: var(--muted); }
     .summary strong { color: var(--text); }
     .results { display: grid; gap: 10px; max-height: 570px; overflow: auto; padding-right: 4px; }
@@ -63,8 +68,8 @@
   <main>
     <header>
       <div class="eyebrow">LOB Vector / Stage 0</div>
-      <h1>分块实验台</h1>
-      <p>观察分块边界，并将每个 Chunk 转换为确定性的归一化向量。</p>
+      <h1>向量检索实验台</h1>
+      <p>观察分块与向量，并通过余弦相似度体验内存 TopK 检索。</p>
     </header>
     <div class="workspace">
       <section class="panel">
@@ -83,12 +88,25 @@
           <label for="metadata">Metadata（JSON）</label>
           <input id="metadata" value='{"source":"web-demo","stage":0}'>
         </div>
-        <button id="run">分块并生成向量</button>
+        <div class="query">
+          <div class="search-controls">
+            <div><label for="query">查询问题</label><input id="query" value="为什么文档需要分块？"></div>
+            <div><label for="topK">TopK</label><input id="topK" type="number" min="1" value="3"></div>
+          </div>
+        </div>
+        <div class="metadata">
+          <label for="filter">Metadata Filter（JSON，可用 gt / gte / lt / lte / ne）</label>
+          <input id="filter" value='{"stage":{"gte":0}}'>
+        </div>
+        <div class="actions">
+          <button id="run" class="secondary">查看分块与向量</button>
+          <button id="search">执行 TopK 检索</button>
+        </div>
         <div id="error" class="error"></div>
       </section>
       <section class="panel">
         <div class="summary"><span>文档 <strong id="length">—</strong> 字符</span><span>生成 <strong id="count">—</strong> 块</span><span>向量 <strong id="dimensionValue">—</strong> 维</span></div>
-        <div id="results" class="results"><div class="empty">点击“执行分块”查看结果</div></div>
+        <div id="results" class="results"><div class="empty">点击按钮查看分块或检索结果</div></div>
       </section>
     </div>
   </main>
@@ -96,19 +114,23 @@
     const $ = (id) => document.getElementById(id);
     const escapeHtml = (text) => text.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
+    function payload() {
+      return {
+        text: $('text').value,
+        chunk_size: Number($('size').value),
+        overlap: Number($('overlap').value),
+        dimension: Number($('dimension').value),
+        metadata: JSON.parse($('metadata').value || '{}')
+      };
+    }
+
     async function run() {
       $('error').textContent = '';
       try {
         const response = await fetch('/api/chunk', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({
-            text: $('text').value,
-            chunk_size: Number($('size').value),
-            overlap: Number($('overlap').value),
-            dimension: Number($('dimension').value),
-            metadata: JSON.parse($('metadata').value || '{}')
-          })
+          body: JSON.stringify(payload())
         });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || '分块失败');
@@ -126,8 +148,37 @@
         $('error').textContent = error.message;
       }
     }
+    async function search() {
+      $('error').textContent = '';
+      try {
+        const request = payload();
+        request.query = $('query').value;
+        request.top_k = Number($('topK').value);
+        request.filter = JSON.parse($('filter').value || '{}');
+        const response = await fetch('/api/search', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(request)
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '检索失败');
+        $('length').textContent = request.text.length;
+        $('count').textContent = data.chunk_count;
+        $('dimensionValue').textContent = request.dimension;
+        $('results').innerHTML = data.results.length ? data.results.map(result => `
+          <article class="chunk">
+            <div class="chunk-head"><b>TOP ${result.rank}</b><span>相似度 ${result.score.toFixed(6)}</span></div>
+            <pre>${escapeHtml(result.content)}</pre>
+            <div class="chunk-head"><b>CHUNK ${result.index}</b><span>${result.start} → ${result.end}</span></div>
+            <pre>${escapeHtml(JSON.stringify(result.metadata, null, 2))}</pre>
+          </article>`).join('') : '<div class="empty">没有符合 Metadata 条件的 Chunk</div>';
+      } catch (error) {
+        $('error').textContent = error.message;
+      }
+    }
     $('run').addEventListener('click', run);
-    run();
+    $('search').addEventListener('click', search);
+    search();
   </script>
 </body>
 </html>

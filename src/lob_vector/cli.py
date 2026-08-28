@@ -11,6 +11,7 @@ from . import __version__
 from .chunking import FixedSizeChunker
 from .embedding import HashEmbedder
 from .models import Document
+from .vectorstore import MemoryVectorStore, MetadataCondition, MetadataFilter
 from .web import serve
 
 
@@ -76,6 +77,67 @@ def _embed_command(args: argparse.Namespace) -> None:
     print(json.dumps(output, ensure_ascii=False, indent=2))
 
 
+def _scalar(value: str) -> str | int | float | bool | None:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return value
+    return parsed if isinstance(parsed, (str, int, float, bool, type(None))) else value
+
+
+def _where(values: Sequence[str]) -> MetadataFilter | None:
+    operators = ((">=", "gte"), ("<=", "lte"), ("!=", "ne"), ("=", "eq"), (">", "gt"), ("<", "lt"))
+    conditions: list[MetadataCondition] = []
+    for item in values:
+        for symbol, operator in operators:
+            key, separator, value = item.partition(symbol)
+            if separator and key.strip() and value.strip():
+                conditions.append(MetadataCondition(key.strip(), operator, _scalar(value.strip())))
+                break
+        else:
+            raise argparse.ArgumentTypeError(
+                f"where 格式无效：{item!r}，示例：year>=2025"
+            )
+    return MetadataFilter(tuple(conditions)) if conditions else None
+
+
+def _search_command(args: argparse.Namespace) -> None:
+    embedder = HashEmbedder(dimension=args.dimension)
+    chunker = FixedSizeChunker(chunk_size=args.chunk_size, overlap=args.overlap)
+    chunks = []
+    for path in args.files:
+        document = Document(
+            id=str(path),
+            content=path.read_text(encoding="utf-8"),
+            metadata={"source": str(path)},
+        )
+        chunks.extend(chunker.split(document))
+
+    store = MemoryVectorStore(dimension=embedder.dimension)
+    store.add(chunks, embedder.embed([chunk.content for chunk in chunks]))
+    results = store.search(
+        embedder.embed([args.query])[0],
+        top_k=args.top_k,
+        metadata_filter=_where(args.where),
+    )
+    output = [
+        {
+            "rank": result.rank,
+            "score": result.score,
+            "content": result.chunk.content,
+            "source": result.chunk.metadata.get("source"),
+            "document_id": result.chunk.document_id,
+            "chunk_id": result.chunk.id,
+            "index": result.chunk.index,
+            "start": result.chunk.start,
+            "end": result.chunk.end,
+            "metadata": dict(result.chunk.metadata),
+        }
+        for result in results
+    ]
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="lob-vector",
@@ -121,6 +183,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="向量维度，默认 32",
     )
     embed_parser.set_defaults(handler=_embed_command)
+
+    search_parser = subparsers.add_parser("search", help="在本地文本文件中执行向量检索")
+    search_parser.add_argument("query", help="查询文本")
+    search_parser.add_argument("files", nargs="+", type=Path, help="UTF-8 文本文件")
+    search_parser.add_argument("--top-k", type=int, default=3, help="返回结果数，默认 3")
+    search_parser.add_argument("--dimension", type=int, default=32, help="向量维度，默认 32")
+    search_parser.add_argument("--chunk-size", type=int, default=500, help="Chunk 最大字符数")
+    search_parser.add_argument("--overlap", type=int, default=50, help="相邻 Chunk 重叠字符数")
+    search_parser.add_argument(
+        "--where",
+        action="append",
+        default=[],
+        metavar="CONDITION",
+        help="Metadata 条件，可重复传入，例如 source=README.md 或 year>=2025",
+    )
+    search_parser.set_defaults(handler=_search_command)
 
     web_parser = subparsers.add_parser("web", help="启动可视化分块实验台")
     web_parser.add_argument("--host", default="127.0.0.1", help="监听地址")
