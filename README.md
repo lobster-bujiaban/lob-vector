@@ -103,7 +103,27 @@ uv run lob-vector web
 
 浏览器打开 <http://127.0.0.1:8765>，可以粘贴文本并调整 Chunk Size、Overlap、向量维度和 Metadata，也可以输入问题体验 TopK 检索与 Metadata Filter。页面结果直接来自 Python `FixedSizeChunker`、`HashEmbedder` 与 `MemoryVectorStore`。
 
-`HashEmbedder` 不具备真实模型的语义理解能力，只用于无网络环境下验证 Embedding、向量归一化和后续检索链路；真实 Embedding 模型将在接口稳定后接入。
+`HashEmbedder` 不具备真实模型的语义理解能力，只用于无网络环境下验证 Embedding、向量归一化和后续检索链路；需要语义检索时使用百炼 Embedding。
+
+使用阿里云百炼真实 Embedding（API Key 只从环境变量读取）：
+
+在项目根目录 `.env` 中配置（该文件已被 Git 忽略）：
+
+```dotenv
+DASHSCOPE_API_KEY=你的百炼_API_Key
+```
+
+然后执行：
+
+```bash
+uv run lob-vector embed "什么是向量检索" --embedder bailian
+uv run lob-vector search "RAG 检索需要掌握什么" \
+  datasets/knowledge-base/*.md \
+  --embedder bailian
+```
+
+默认模型为 `text-embedding-v4`，向量维度为 1024。若使用百炼业务空间专属域名，追加
+`--base-url https://你的业务空间ID.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`。
 
 ## 第一个里程碑
 

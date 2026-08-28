@@ -4,15 +4,29 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Sequence
 
 from . import __version__
 from .chunking import FixedSizeChunker
-from .embedding import HashEmbedder
+from .embedding import BailianEmbedder, Embedder, HashEmbedder
 from .models import Document
 from .vectorstore import MemoryVectorStore, MetadataCondition, MetadataFilter
 from .web import serve
+
+
+def _load_dotenv(path: Path = Path(".env")) -> None:
+    """读取简单的 KEY=VALUE 配置，已存在的环境变量优先。"""
+    if not path.is_file():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, separator, value = line.partition("=")
+        if separator and key.strip():
+            os.environ.setdefault(key.strip(), value.strip().strip("'\""))
 
 
 def _metadata(values: Sequence[str]) -> dict[str, str]:
@@ -62,8 +76,18 @@ def _web_command(args: argparse.Namespace) -> None:
     serve(host=args.host, port=args.port)
 
 
+def _embedder(args: argparse.Namespace) -> Embedder:
+    if args.embedder == "bailian":
+        return BailianEmbedder(
+            dimension=args.dimension or 1024,
+            model=args.model,
+            base_url=args.base_url,
+        )
+    return HashEmbedder(dimension=args.dimension or 32)
+
+
 def _embed_command(args: argparse.Namespace) -> None:
-    embedder = HashEmbedder(dimension=args.dimension)
+    embedder = _embedder(args)
     vectors = embedder.embed(args.text)
     output = [
         {
@@ -102,7 +126,7 @@ def _where(values: Sequence[str]) -> MetadataFilter | None:
 
 
 def _search_command(args: argparse.Namespace) -> None:
-    embedder = HashEmbedder(dimension=args.dimension)
+    embedder = _embedder(args)
     chunker = FixedSizeChunker(chunk_size=args.chunk_size, overlap=args.overlap)
     chunks = []
     for path in args.files:
@@ -176,19 +200,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     embed_parser = subparsers.add_parser("embed", help="生成确定性的本地 Hash Embedding")
     embed_parser.add_argument("text", nargs="+", help="需要转换为向量的文本")
-    embed_parser.add_argument(
-        "--dimension",
-        type=int,
-        default=32,
-        help="向量维度，默认 32",
-    )
+    _add_embedder_arguments(embed_parser)
     embed_parser.set_defaults(handler=_embed_command)
 
     search_parser = subparsers.add_parser("search", help="在本地文本文件中执行向量检索")
     search_parser.add_argument("query", help="查询文本")
     search_parser.add_argument("files", nargs="+", type=Path, help="UTF-8 文本文件")
     search_parser.add_argument("--top-k", type=int, default=3, help="返回结果数，默认 3")
-    search_parser.add_argument("--dimension", type=int, default=32, help="向量维度，默认 32")
+    _add_embedder_arguments(search_parser)
     search_parser.add_argument("--chunk-size", type=int, default=500, help="Chunk 最大字符数")
     search_parser.add_argument("--overlap", type=int, default=50, help="相邻 Chunk 重叠字符数")
     search_parser.add_argument(
@@ -207,7 +226,32 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _add_embedder_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--embedder",
+        choices=("hash", "bailian"),
+        default="hash",
+        help="Embedding 实现，默认 hash",
+    )
+    parser.add_argument(
+        "--dimension",
+        type=int,
+        help="向量维度；hash 默认 32，bailian 默认 1024",
+    )
+    parser.add_argument(
+        "--model",
+        default="text-embedding-v4",
+        help="百炼模型名称，默认 text-embedding-v4",
+    )
+    parser.add_argument(
+        "--base-url",
+        default="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        help="百炼 OpenAI 兼容接口地址",
+    )
+
+
 def main() -> None:
+    _load_dotenv()
     parser = build_parser()
     args = parser.parse_args()
     handler = getattr(args, "handler", None)
