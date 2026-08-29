@@ -16,7 +16,11 @@ from .models import Chunk, Document
 from .vectorstore import MemoryVectorStore, MetadataCondition, MetadataFilter
 
 
-_DATASET_DIR = Path(__file__).resolve().parents[2] / "datasets" / "knowledge-base"
+_DATASETS_ROOT = Path(__file__).resolve().parents[2] / "datasets"
+_DATASET_DIRS = {
+    "demo": _DATASETS_ROOT / "demo-knowledge-base",
+    "shared": _DATASETS_ROOT / "knowledge-base",
+}
 _DATASET_METADATA = {
     "tech-stack.md": {"category": "profile", "topic": "engineering"},
     "ai-application-engineer-roadmap.md": {"category": "learning", "topic": "ai-application"},
@@ -36,9 +40,12 @@ def _embedder(payload: dict[str, Any], provider: str | None = None) -> Embedder:
 
 
 def _documents(payload: dict[str, Any]) -> list[Document]:
-    if payload.get("source_mode", "text") == "dataset":
+    source_mode = payload.get("source_mode", "text")
+    if source_mode in {"dataset", "demo", "shared"}:
+        dataset_name = "shared" if source_mode == "dataset" else source_mode
+        dataset_dir = _DATASET_DIRS[dataset_name]
         documents = []
-        for path in sorted(_DATASET_DIR.glob("*.md")):
+        for path in sorted(dataset_dir.glob("*.md")):
             if path.name == "README.md":
                 continue
             content = path.read_text(encoding="utf-8")
@@ -50,8 +57,8 @@ def _documents(payload: dict[str, Any]) -> list[Document]:
                     continue
                 heading = section.splitlines()[0].lstrip("# ")
                 metadata = {
-                    "source": f"datasets/knowledge-base/{path.name}",
-                    "dataset": "shared-knowledge-base",
+                    "source": f"datasets/{dataset_dir.name}/{path.name}",
+                    "dataset": dataset_dir.name,
                     "section": heading,
                     "source_offset": start,
                     **_DATASET_METADATA.get(path.name, {}),
@@ -175,23 +182,35 @@ def _compare(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _dataset() -> dict[str, Any]:
-    documents = _documents({"source_mode": "dataset"})
+def _dataset(source_mode: str = "demo") -> dict[str, Any]:
+    documents = _documents({"source_mode": source_mode})
+    sources: dict[str, dict[str, Any]] = {}
+    for document in documents:
+        source = str(document.metadata["source"])
+        entry = sources.setdefault(
+            source,
+            {"source": source, "section_count": 0, "metadata": dict(document.metadata)},
+        )
+        entry["section_count"] += 1
+    for entry in sources.values():
+        entry["metadata"].pop("section", None)
+        entry["metadata"].pop("source_offset", None)
     return {
-        "name": "共享知识库实验集",
+        "name": "典型知识库对照集" if source_mode == "demo" else "共享知识库实验集",
         "document_count": len(documents),
+        "source_count": len(sources),
         "character_count": sum(len(document.content) for document in documents),
-        "documents": [
-            {"id": document.id, "source": document.metadata["source"], "metadata": dict(document.metadata)}
-            for document in documents
-        ],
+        "sources": list(sources.values()),
     }
 
 
 class DemoHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
-        if self.path == "/api/dataset":
-            self._send_json(HTTPStatus.OK, _dataset())
+        if self.path in {"/api/dataset", "/api/dataset/demo"}:
+            self._send_json(HTTPStatus.OK, _dataset("demo"))
+            return
+        if self.path == "/api/dataset/shared":
+            self._send_json(HTTPStatus.OK, _dataset("shared"))
             return
         if self.path != "/":
             self.send_error(HTTPStatus.NOT_FOUND)
