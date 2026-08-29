@@ -50,7 +50,7 @@
 ## 阶段路线
 
 - [x] 阶段 0：手写内存向量检索
-- [ ] 阶段 1：Chroma 与基础知识库
+- [x] 阶段 1：Chroma 与基础知识库
 - [ ] 阶段 2：Qdrant 与生产级过滤检索
 - [ ] 阶段 3：Milvus 索引实验与分布式架构
 - [ ] 阶段 4：完整 RAG 与引用溯源
@@ -124,6 +124,24 @@ uv run lob-vector search "RAG 检索需要掌握什么" \
 
 默认模型为 `text-embedding-v4`，向量维度为 1024。若使用百炼业务空间专属域名，追加
 `--base-url https://你的业务空间ID.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`。
+
+使用 Chroma 建立并查询持久化知识库：
+
+```bash
+uv run lob-vector index datasets/demo-knowledge-base/*.md \
+  --store chroma \
+  --collection demo-kb
+
+# 新进程中不再传文件，直接查询磁盘中的 Collection
+uv run lob-vector search "登录凭据想不起来怎么办" \
+  --store chroma \
+  --collection demo-kb
+
+uv run lob-vector clear --collection demo-kb
+```
+
+Chroma 默认持久化到 `.chroma/`，该目录已被 Git 忽略。Memory 与 Chroma 都实现统一
+`VectorStore` 的 `upsert`、`delete`、`clear`、`count` 和 `search` 能力。
 
 ## 第一个里程碑
 

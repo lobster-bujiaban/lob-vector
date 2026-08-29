@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal, Protocol, Sequence, runtime_checkable
 
 from .models import Chunk, MetadataValue, SearchResult
@@ -63,7 +64,13 @@ class VectorStore(Protocol):
     @property
     def dimension(self) -> int: ...
 
-    def add(self, chunks: Sequence[Chunk], vectors: Sequence[Sequence[float]]) -> None: ...
+    def upsert(self, chunks: Sequence[Chunk], vectors: Sequence[Sequence[float]]) -> None: ...
+
+    def delete(self, ids: Sequence[str]) -> None: ...
+
+    def clear(self) -> None: ...
+
+    def count(self) -> int: ...
 
     def search(
         self,
@@ -90,6 +97,9 @@ class MemoryVectorStore:
             raise ValueError("dimension 必须大于 0")
 
     def add(self, chunks: Sequence[Chunk], vectors: Sequence[Sequence[float]]) -> None:
+        self.upsert(chunks, vectors)
+
+    def upsert(self, chunks: Sequence[Chunk], vectors: Sequence[Sequence[float]]) -> None:
         if len(chunks) != len(vectors):
             raise ValueError("chunks 和 vectors 数量必须一致")
         prepared: list[tuple[Chunk, tuple[float, ...]]] = []
@@ -97,6 +107,16 @@ class MemoryVectorStore:
             prepared.append((chunk, self._validate_vector(vector)))
         for chunk, vector in prepared:
             self._entries[chunk.id] = (chunk, vector)
+
+    def delete(self, ids: Sequence[str]) -> None:
+        for chunk_id in ids:
+            self._entries.pop(chunk_id, None)
+
+    def clear(self) -> None:
+        self._entries.clear()
+
+    def count(self) -> int:
+        return len(self._entries)
 
     def search(
         self,
@@ -135,3 +155,141 @@ class MemoryVectorStore:
         left_norm = math.sqrt(sum(value * value for value in left))
         right_norm = math.sqrt(sum(value * value for value in right))
         return dot / (left_norm * right_norm)
+
+
+@dataclass(slots=True)
+class ChromaVectorStore:
+    """使用 Chroma PersistentClient 保存并检索调用方提供的向量。"""
+
+    dimension: int
+    path: Path | str = Path(".chroma")
+    collection_name: str = "lob-vector"
+    _client: object = field(init=False, repr=False)
+    _collection: object = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.dimension, bool) or not isinstance(self.dimension, int):
+            raise TypeError("dimension 必须是整数")
+        if self.dimension <= 0:
+            raise ValueError("dimension 必须大于 0")
+        if not self.collection_name.strip():
+            raise ValueError("collection_name 不能为空")
+        try:
+            import chromadb
+        except ImportError as error:
+            raise RuntimeError("使用 Chroma 前请先执行 uv sync") from error
+
+        self.path = Path(self.path)
+        self._client = chromadb.PersistentClient(path=str(self.path))
+        self._collection = self._open_collection()
+        stored_dimension = (self._collection.metadata or {}).get("lob_dimension")
+        if stored_dimension is not None and stored_dimension != self.dimension:
+            raise ValueError(
+                f"Chroma Collection 维度为 {stored_dimension}，当前 Embedder 为 {self.dimension}"
+            )
+
+    def _open_collection(self) -> object:
+        return self._client.get_or_create_collection(
+            name=self.collection_name,
+            metadata={"lob_dimension": self.dimension, "description": "LOB Vector Stage 1"},
+            configuration={"hnsw": {"space": "cosine"}},
+        )
+
+    def add(self, chunks: Sequence[Chunk], vectors: Sequence[Sequence[float]]) -> None:
+        self.upsert(chunks, vectors)
+
+    def upsert(self, chunks: Sequence[Chunk], vectors: Sequence[Sequence[float]]) -> None:
+        if len(chunks) != len(vectors):
+            raise ValueError("chunks 和 vectors 数量必须一致")
+        if not chunks:
+            return
+        prepared_vectors = [self._validate_vector(vector) for vector in vectors]
+        self._collection.upsert(
+            ids=[chunk.id for chunk in chunks],
+            embeddings=[list(vector) for vector in prepared_vectors],
+            documents=[chunk.content for chunk in chunks],
+            metadatas=[self._metadata(chunk) for chunk in chunks],
+        )
+
+    def delete(self, ids: Sequence[str]) -> None:
+        if ids:
+            self._collection.delete(ids=list(ids))
+
+    def clear(self) -> None:
+        self._client.delete_collection(self.collection_name)
+        self._collection = self._open_collection()
+
+    def count(self) -> int:
+        return self._collection.count()
+
+    def search(
+        self,
+        query_vector: Sequence[float],
+        *,
+        top_k: int = 3,
+        metadata_filter: MetadataFilter | None = None,
+    ) -> list[SearchResult]:
+        if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k <= 0:
+            raise ValueError("top_k 必须是正整数")
+        if self.count() == 0:
+            return []
+        result = self._collection.query(
+            query_embeddings=[list(self._validate_vector(query_vector))],
+            n_results=min(top_k, self.count()),
+            where=self._where(metadata_filter),
+            include=["documents", "metadatas", "distances"],
+        )
+        ids = result["ids"][0]
+        documents = result["documents"][0]
+        metadatas = result["metadatas"][0]
+        distances = result["distances"][0]
+        results = []
+        for rank, (chunk_id, content, metadata, distance) in enumerate(
+            zip(ids, documents, metadatas, distances, strict=True), start=1
+        ):
+            metadata = dict(metadata or {})
+            chunk = Chunk(
+                id=chunk_id,
+                document_id=str(metadata.pop("_lob_document_id")),
+                content=content,
+                index=int(metadata.pop("_lob_index")),
+                start=int(metadata.pop("_lob_start")),
+                end=int(metadata.pop("_lob_end")),
+                metadata=metadata,
+            )
+            results.append(SearchResult(chunk=chunk, score=1.0 - float(distance), rank=rank))
+        return results
+
+    def _validate_vector(self, vector: Sequence[float]) -> tuple[float, ...]:
+        if len(vector) != self.dimension:
+            raise ValueError(f"向量维度必须为 {self.dimension}，当前为 {len(vector)}")
+        values = tuple(float(value) for value in vector)
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("向量只能包含有限数值")
+        if not any(values):
+            raise ValueError("向量不能是零向量")
+        return values
+
+    @staticmethod
+    def _metadata(chunk: Chunk) -> dict[str, str | int | float | bool]:
+        metadata = {key: value for key, value in chunk.metadata.items() if value is not None}
+        metadata.update(
+            {
+                "_lob_document_id": chunk.document_id,
+                "_lob_index": chunk.index,
+                "_lob_start": chunk.start,
+                "_lob_end": chunk.end,
+            }
+        )
+        return metadata
+
+    @staticmethod
+    def _where(metadata_filter: MetadataFilter | None) -> dict[str, object] | None:
+        if metadata_filter is None or not metadata_filter.conditions:
+            return None
+        operators = {"eq": "$eq", "ne": "$ne", "gt": "$gt", "gte": "$gte", "lt": "$lt", "lte": "$lte"}
+        clauses = [
+            {condition.key: {operators[condition.operator]: condition.value}}
+            for condition in metadata_filter.conditions
+        ]
+        return clauses[0] if len(clauses) == 1 else {"$and": clauses}

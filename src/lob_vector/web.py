@@ -12,8 +12,8 @@ from typing import Any
 
 from .chunking import FixedSizeChunker
 from .embedding import BailianEmbedder, Embedder, HashEmbedder
-from .models import Chunk, Document
-from .vectorstore import MemoryVectorStore, MetadataCondition, MetadataFilter
+from .models import Chunk, Document, SearchResult
+from .vectorstore import ChromaVectorStore, MemoryVectorStore, MetadataCondition, MetadataFilter
 
 
 _DATASETS_ROOT = Path(__file__).resolve().parents[2] / "datasets"
@@ -182,6 +182,76 @@ def _compare(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _store_compare(payload: dict[str, Any]) -> dict[str, Any]:
+    query = payload.get("query", "登录凭据想不起来，该怎样重新进入账号？")
+    if not isinstance(query, str) or not query.strip():
+        raise ValueError("请输入查询问题")
+    prepared_payload = {
+        "source_mode": payload.get("source_mode", "demo"),
+        "embedder": "hash",
+        "dimension": 32,
+        "chunk_size": payload.get("chunk_size", 300),
+        "overlap": payload.get("overlap", 30),
+    }
+    chunks, vectors, embedder = _prepare(prepared_payload)
+    query_vector = embedder.embed([query])[0]
+    memory = MemoryVectorStore(embedder.dimension)
+    memory.upsert(chunks, vectors)
+
+    collection_name = "stage1-memory-chroma"
+    persist_path = Path(".chroma") / "web-stage1"
+    chroma = ChromaVectorStore(embedder.dimension, persist_path, collection_name)
+    chroma.clear()
+    lifecycle = [{"action": "clear", "count": chroma.count()}]
+    chroma.upsert(chunks, vectors)
+    lifecycle.append({"action": "upsert", "count": chroma.count()})
+    chroma.upsert(chunks[:1], vectors[:1])
+    lifecycle.append({"action": "update", "count": chroma.count()})
+    chroma.delete([chunks[-1].id])
+    lifecycle.append({"action": "delete", "count": chroma.count()})
+    chroma.upsert(chunks[-1:], vectors[-1:])
+    lifecycle.append({"action": "restore", "count": chroma.count()})
+    reopened = ChromaVectorStore(embedder.dimension, persist_path, collection_name)
+    lifecycle.append({"action": "reopen", "count": reopened.count()})
+
+    top_k = payload.get("top_k", 3)
+    memory_results = memory.search(query_vector, top_k=top_k)
+    chroma_results = reopened.search(query_vector, top_k=top_k)
+    memory_ids = [result.chunk.id for result in memory_results]
+    chroma_ids = [result.chunk.id for result in chroma_results]
+    score_deltas = [
+        abs(left.score - right.score)
+        for left, right in zip(memory_results, chroma_results, strict=True)
+    ]
+
+    def serialize(results: list[SearchResult]) -> list[dict[str, Any]]:
+        return [
+            {
+                "rank": result.rank,
+                "score": result.score,
+                "id": result.chunk.id,
+                "content": result.chunk.content,
+                "section": result.chunk.metadata.get("section"),
+                "source": result.chunk.metadata.get("source"),
+            }
+            for result in results
+        ]
+
+    return {
+        "query": query,
+        "chunk_count": len(chunks),
+        "dimension": embedder.dimension,
+        "persist_path": str(persist_path),
+        "collection": collection_name,
+        "same_top_k": memory_ids == chroma_ids,
+        "same_top_1": bool(memory_ids and memory_ids[0] == chroma_ids[0]),
+        "max_score_delta": max(score_deltas, default=0.0),
+        "memory": serialize(memory_results),
+        "chroma": serialize(chroma_results),
+        "lifecycle": lifecycle,
+    }
+
+
 def _dataset(source_mode: str = "demo") -> dict[str, Any]:
     documents = _documents({"source_mode": source_mode})
     sources: dict[str, dict[str, Any]] = {}
@@ -219,7 +289,7 @@ class DemoHandler(BaseHTTPRequestHandler):
         self._send(HTTPStatus.OK, content, "text/html; charset=utf-8")
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path not in {"/api/chunk", "/api/search", "/api/compare"}:
+        if self.path not in {"/api/chunk", "/api/search", "/api/compare", "/api/store-compare"}:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         try:
@@ -231,6 +301,8 @@ class DemoHandler(BaseHTTPRequestHandler):
                 result = _search(payload)
             elif self.path == "/api/compare":
                 result = _compare(payload)
+            elif self.path == "/api/store-compare":
+                result = _store_compare(payload)
             else:
                 result = _chunk(payload)
             self._send_json(HTTPStatus.OK, result)

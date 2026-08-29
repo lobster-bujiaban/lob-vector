@@ -11,8 +11,8 @@ from typing import Sequence
 from . import __version__
 from .chunking import FixedSizeChunker
 from .embedding import BailianEmbedder, Embedder, HashEmbedder
-from .models import Document
-from .vectorstore import MemoryVectorStore, MetadataCondition, MetadataFilter
+from .models import Chunk, Document
+from .vectorstore import ChromaVectorStore, MemoryVectorStore, MetadataCondition, MetadataFilter, VectorStore
 from .web import serve
 
 
@@ -127,18 +127,12 @@ def _where(values: Sequence[str]) -> MetadataFilter | None:
 
 def _search_command(args: argparse.Namespace) -> None:
     embedder = _embedder(args)
-    chunker = FixedSizeChunker(chunk_size=args.chunk_size, overlap=args.overlap)
-    chunks = []
-    for path in args.files:
-        document = Document(
-            id=str(path),
-            content=path.read_text(encoding="utf-8"),
-            metadata={"source": str(path)},
-        )
-        chunks.extend(chunker.split(document))
-
-    store = MemoryVectorStore(dimension=embedder.dimension)
-    store.add(chunks, embedder.embed([chunk.content for chunk in chunks]))
+    store = _store(args, embedder.dimension)
+    if args.files:
+        chunks = _file_chunks(args.files, args.chunk_size, args.overlap)
+        store.upsert(chunks, embedder.embed([chunk.content for chunk in chunks]))
+    elif args.store == "memory":
+        raise SystemExit("memory 存储不会跨进程保留数据，请提供至少一个查询文件")
     results = store.search(
         embedder.embed([args.query])[0],
         top_k=args.top_k,
@@ -160,6 +154,60 @@ def _search_command(args: argparse.Namespace) -> None:
         for result in results
     ]
     print(json.dumps(output, ensure_ascii=False, indent=2))
+
+
+def _index_command(args: argparse.Namespace) -> None:
+    embedder = _embedder(args)
+    store = _store(args, embedder.dimension)
+    chunks = _file_chunks(args.files, args.chunk_size, args.overlap)
+    store.upsert(chunks, embedder.embed([chunk.content for chunk in chunks]))
+    print(
+        json.dumps(
+            {
+                "store": args.store,
+                "collection": args.collection,
+                "indexed_files": len(args.files),
+                "indexed_chunks": len(chunks),
+                "total_chunks": store.count(),
+                "dimension": embedder.dimension,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+def _clear_command(args: argparse.Namespace) -> None:
+    store = ChromaVectorStore(
+        dimension=args.dimension,
+        path=args.persist_path,
+        collection_name=args.collection,
+    )
+    store.clear()
+    print(json.dumps({"store": "chroma", "collection": args.collection, "total_chunks": 0}, ensure_ascii=False))
+
+
+def _file_chunks(files: Sequence[Path], chunk_size: int, overlap: int) -> list[Chunk]:
+    chunker = FixedSizeChunker(chunk_size=chunk_size, overlap=overlap)
+    chunks = []
+    for path in files:
+        document = Document(
+            id=str(path),
+            content=path.read_text(encoding="utf-8"),
+            metadata={"source": str(path)},
+        )
+        chunks.extend(chunker.split(document))
+    return chunks
+
+
+def _store(args: argparse.Namespace, dimension: int) -> VectorStore:
+    if args.store == "chroma":
+        return ChromaVectorStore(
+            dimension=dimension,
+            path=args.persist_path,
+            collection_name=args.collection,
+        )
+    return MemoryVectorStore(dimension=dimension)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -205,9 +253,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     search_parser = subparsers.add_parser("search", help="在本地文本文件中执行向量检索")
     search_parser.add_argument("query", help="查询文本")
-    search_parser.add_argument("files", nargs="+", type=Path, help="UTF-8 文本文件")
+    search_parser.add_argument("files", nargs="*", type=Path, help="UTF-8 文本文件；Chroma 可省略并查询已持久化数据")
     search_parser.add_argument("--top-k", type=int, default=3, help="返回结果数，默认 3")
     _add_embedder_arguments(search_parser)
+    _add_store_arguments(search_parser)
     search_parser.add_argument("--chunk-size", type=int, default=500, help="Chunk 最大字符数")
     search_parser.add_argument("--overlap", type=int, default=50, help="相邻 Chunk 重叠字符数")
     search_parser.add_argument(
@@ -218,6 +267,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Metadata 条件，可重复传入，例如 source=README.md 或 year>=2025",
     )
     search_parser.set_defaults(handler=_search_command)
+
+    index_parser = subparsers.add_parser("index", help="将文本文件写入向量存储")
+    index_parser.add_argument("files", nargs="+", type=Path, help="需要索引的 UTF-8 文本文件")
+    index_parser.add_argument("--chunk-size", type=int, default=500, help="Chunk 最大字符数")
+    index_parser.add_argument("--overlap", type=int, default=50, help="相邻 Chunk 重叠字符数")
+    _add_embedder_arguments(index_parser)
+    _add_store_arguments(index_parser)
+    index_parser.set_defaults(handler=_index_command)
+
+    clear_parser = subparsers.add_parser("clear", help="清空 Chroma Collection")
+    clear_parser.add_argument("--dimension", type=int, default=32, help="Collection 向量维度")
+    clear_parser.add_argument("--persist-path", type=Path, default=Path(".chroma"), help="Chroma 持久化目录")
+    clear_parser.add_argument("--collection", default="lob-vector", help="Chroma Collection 名称")
+    clear_parser.set_defaults(handler=_clear_command)
 
     web_parser = subparsers.add_parser("web", help="启动可视化分块实验台")
     web_parser.add_argument("--host", default="127.0.0.1", help="监听地址")
@@ -247,6 +310,26 @@ def _add_embedder_arguments(parser: argparse.ArgumentParser) -> None:
         "--base-url",
         default="https://dashscope.aliyuncs.com/compatible-mode/v1",
         help="百炼 OpenAI 兼容接口地址",
+    )
+
+
+def _add_store_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--store",
+        choices=("memory", "chroma"),
+        default="memory",
+        help="向量存储，默认 memory",
+    )
+    parser.add_argument(
+        "--persist-path",
+        type=Path,
+        default=Path(".chroma"),
+        help="Chroma 持久化目录，默认 .chroma",
+    )
+    parser.add_argument(
+        "--collection",
+        default="lob-vector",
+        help="Chroma Collection 名称",
     )
 
 
