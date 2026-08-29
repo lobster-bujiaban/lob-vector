@@ -3,44 +3,97 @@
 from __future__ import annotations
 
 import json
+import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
+from pathlib import Path
 from typing import Any
 
 from .chunking import FixedSizeChunker
-from .embedding import HashEmbedder
-from .models import Document
+from .embedding import BailianEmbedder, Embedder, HashEmbedder
+from .models import Chunk, Document
 from .vectorstore import MemoryVectorStore, MetadataCondition, MetadataFilter
 
 
-def _chunk(payload: dict[str, Any]) -> dict[str, Any]:
+_DATASET_DIR = Path(__file__).resolve().parents[2] / "datasets" / "knowledge-base"
+_DATASET_METADATA = {
+    "tech-stack.md": {"category": "profile", "topic": "engineering"},
+    "ai-application-engineer-roadmap.md": {"category": "learning", "topic": "ai-application"},
+}
+
+
+def _embedder(payload: dict[str, Any], provider: str | None = None) -> Embedder:
+    selected = provider or payload.get("embedder", "hash")
+    if selected == "bailian":
+        dimension = payload.get("dimension", 1024)
+        if dimension == 32:  # Web 表单从 Hash 切换百炼时使用推荐维度。
+            dimension = 1024
+        return BailianEmbedder(dimension=dimension)
+    if selected != "hash":
+        raise ValueError(f"不支持的 Embedder：{selected}")
+    return HashEmbedder(payload.get("dimension", 32))
+
+
+def _documents(payload: dict[str, Any]) -> list[Document]:
+    if payload.get("source_mode", "text") == "dataset":
+        documents = []
+        for path in sorted(_DATASET_DIR.glob("*.md")):
+            if path.name == "README.md":
+                continue
+            content = path.read_text(encoding="utf-8")
+            starts = [0, *(match.start() for match in re.finditer(r"(?m)^## ", content))]
+            boundaries = sorted(set(starts)) + [len(content)]
+            for index, (start, end) in enumerate(zip(boundaries, boundaries[1:])):
+                section = content[start:end].strip()
+                if not section:
+                    continue
+                heading = section.splitlines()[0].lstrip("# ")
+                metadata = {
+                    "source": f"datasets/knowledge-base/{path.name}",
+                    "dataset": "shared-knowledge-base",
+                    "section": heading,
+                    "source_offset": start,
+                    **_DATASET_METADATA.get(path.name, {}),
+                }
+                documents.append(Document(f"{path.stem}:{index}", section, metadata))
+        if not documents:
+            raise ValueError("知识库数据集为空")
+        return documents
+
     text = payload.get("text")
     if not isinstance(text, str) or not text.strip():
         raise ValueError("请输入需要分块的文本")
+    raw_metadata = payload.get("metadata", {})
+    if not isinstance(raw_metadata, dict):
+        raise ValueError("metadata 必须是 JSON 对象")
+    return [Document("web-demo", text, raw_metadata)]
+
+
+def _prepare(payload: dict[str, Any], provider: str | None = None) -> tuple[list[Chunk], list[list[float]], Embedder]:
+    documents = _documents(payload)
 
     chunk_size = payload.get("chunk_size", 120)
     overlap = payload.get("overlap", 20)
-    dimension = payload.get("dimension", 32)
     if not isinstance(chunk_size, int) or isinstance(chunk_size, bool):
         raise ValueError("chunk_size 必须是整数")
     if not isinstance(overlap, int) or isinstance(overlap, bool):
         raise ValueError("overlap 必须是整数")
-    if not isinstance(dimension, int) or isinstance(dimension, bool):
-        raise ValueError("dimension 必须是整数")
-
-    raw_metadata = payload.get("metadata", {})
-    if not isinstance(raw_metadata, dict):
-        raise ValueError("metadata 必须是 JSON 对象")
-
-    document = Document("web-demo", text, raw_metadata)
-    chunks = FixedSizeChunker(chunk_size, overlap).split(document)
-    embedder = HashEmbedder(dimension)
+    chunker = FixedSizeChunker(chunk_size, overlap)
+    chunks = [chunk for document in documents for chunk in chunker.split(document)]
+    embedder = _embedder(payload, provider)
     vectors = embedder.embed([chunk.content for chunk in chunks])
+    return chunks, vectors, embedder
+
+
+def _chunk(payload: dict[str, Any]) -> dict[str, Any]:
+    chunks, vectors, embedder = _prepare(payload)
     return {
-        "document_length": len(text),
+        "document_length": sum(len(document.content) for document in _documents(payload)),
+        "document_count": len(_documents(payload)),
         "chunk_count": len(chunks),
         "embedding_dimension": embedder.dimension,
+        "embedder": payload.get("embedder", "hash"),
         "chunks": [
             {
                 "id": chunk.id,
@@ -59,7 +112,6 @@ def _chunk(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _search(payload: dict[str, Any]) -> dict[str, Any]:
-    chunk_result = _chunk(payload)
     query = payload.get("query")
     if not isinstance(query, str) or not query.strip():
         raise ValueError("请输入查询问题")
@@ -82,17 +134,9 @@ def _search(payload: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"不支持过滤操作：{operator}")
         conditions.append(MetadataCondition(str(key), operator, value))
 
-    chunks = []
-    vectors = []
-    for item in chunk_result["chunks"]:
-        document = Document("web-demo", payload["text"], payload.get("metadata", {}))
-        chunk = FixedSizeChunker(payload.get("chunk_size", 120), payload.get("overlap", 20)).split(document)[item["index"]]
-        chunks.append(chunk)
-        vectors.append(item["vector"])
-
-    dimension = chunk_result["embedding_dimension"]
-    embedder = HashEmbedder(dimension)
-    store = MemoryVectorStore(dimension)
+    documents = _documents(payload)
+    chunks, vectors, embedder = _prepare(payload)
+    store = MemoryVectorStore(embedder.dimension)
     store.add(chunks, vectors)
     results = store.search(
         embedder.embed([query])[0],
@@ -101,6 +145,10 @@ def _search(payload: dict[str, Any]) -> dict[str, Any]:
     )
     return {
         "query": query,
+        "embedder": payload.get("embedder", "hash"),
+        "embedding_dimension": embedder.dimension,
+        "document_length": sum(len(document.content) for document in documents),
+        "document_count": len(documents),
         "chunk_count": len(chunks),
         "result_count": len(results),
         "results": [
@@ -119,8 +167,32 @@ def _search(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _compare(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "query": payload.get("query"),
+        "hash": _search({**payload, "embedder": "hash", "dimension": 32}),
+        "bailian": _search({**payload, "embedder": "bailian", "dimension": 1024}),
+    }
+
+
+def _dataset() -> dict[str, Any]:
+    documents = _documents({"source_mode": "dataset"})
+    return {
+        "name": "共享知识库实验集",
+        "document_count": len(documents),
+        "character_count": sum(len(document.content) for document in documents),
+        "documents": [
+            {"id": document.id, "source": document.metadata["source"], "metadata": dict(document.metadata)}
+            for document in documents
+        ],
+    }
+
+
 class DemoHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
+        if self.path == "/api/dataset":
+            self._send_json(HTTPStatus.OK, _dataset())
+            return
         if self.path != "/":
             self.send_error(HTTPStatus.NOT_FOUND)
             return
@@ -128,7 +200,7 @@ class DemoHandler(BaseHTTPRequestHandler):
         self._send(HTTPStatus.OK, content, "text/html; charset=utf-8")
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path not in {"/api/chunk", "/api/search"}:
+        if self.path not in {"/api/chunk", "/api/search", "/api/compare"}:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         try:
@@ -136,10 +208,17 @@ class DemoHandler(BaseHTTPRequestHandler):
             if length > 1_000_000:
                 raise ValueError("演示文本不能超过 1 MB")
             payload = json.loads(self.rfile.read(length))
-            result = _search(payload) if self.path == "/api/search" else _chunk(payload)
+            if self.path == "/api/search":
+                result = _search(payload)
+            elif self.path == "/api/compare":
+                result = _compare(payload)
+            else:
+                result = _chunk(payload)
             self._send_json(HTTPStatus.OK, result)
         except (ValueError, TypeError, json.JSONDecodeError) as error:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+        except RuntimeError as error:
+            self._send_json(HTTPStatus.BAD_GATEWAY, {"error": str(error)})
 
     def log_message(self, format: str, *args: object) -> None:
         print(f"[web] {self.address_string()} {format % args}")
