@@ -333,6 +333,21 @@ def _qdrant_filter(payload: dict[str, Any]) -> dict[str, Any]:
     finally:
         store.close()
 
+    chroma = ChromaVectorStore(
+        32,
+        Path(".chroma") / "web-stage2",
+        "stage2-product-compare",
+    )
+    chroma.clear()
+    chroma.upsert(all_chunks, all_vectors)
+    started = time.perf_counter()
+    chroma_filtered = chroma.search(
+        query_vector,
+        top_k=3,
+        metadata_filter=metadata_filter,
+    )
+    chroma_ms = (time.perf_counter() - started) * 1000
+
     def serialize(results: list[SearchResult]) -> list[dict[str, Any]]:
         return [
             {
@@ -368,8 +383,12 @@ def _qdrant_filter(payload: dict[str, Any]) -> dict[str, Any]:
         ),
         "unfiltered_ms": unfiltered_ms,
         "filtered_ms": filtered_ms,
+        "chroma_ms": chroma_ms,
         "unfiltered": serialize(unfiltered),
         "filtered": serialize(filtered),
+        "chroma_filtered": serialize(chroma_filtered),
+        "same_filtered_top_k": [item.chunk.id for item in filtered]
+        == [item.chunk.id for item in chroma_filtered],
     }
 
 
