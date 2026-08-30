@@ -11,4 +11,6 @@ __pycache__/
 .ruff_cache/
 .chroma/
 .qdrant/
+.milvus/
+volumes/
 *.mp4

@@ -12,7 +12,7 @@ from . import __version__
 from .chunking import FixedSizeChunker
 from .embedding import BailianEmbedder, Embedder, HashEmbedder
 from .models import Chunk, Document, MetadataValue
-from .vectorstore import ChromaVectorStore, MemoryVectorStore, MetadataCondition, MetadataFilter, QdrantVectorStore, VectorStore
+from .vectorstore import ChromaVectorStore, MemoryVectorStore, MetadataCondition, MetadataFilter, MilvusVectorStore, QdrantVectorStore, VectorStore
 from .web import serve
 
 
@@ -214,6 +214,12 @@ def _store(args: argparse.Namespace, dimension: int) -> VectorStore:
             path=args.persist_path or Path(".qdrant"),
             collection_name=args.collection,
         )
+    if args.store == "milvus":
+        return MilvusVectorStore.from_environment(
+            dimension=dimension,
+            path=args.persist_path or Path(".milvus/lob-vector.db"),
+            collection_name=args.collection.replace("-", "_"),
+        )
     return MemoryVectorStore(dimension=dimension)
 
 
@@ -291,7 +297,7 @@ def build_parser() -> argparse.ArgumentParser:
     index_parser.set_defaults(handler=_index_command)
 
     clear_parser = subparsers.add_parser("clear", help="清空持久化 Collection")
-    clear_parser.add_argument("--store", choices=("chroma", "qdrant"), default="chroma", help="持久化向量存储")
+    clear_parser.add_argument("--store", choices=("chroma", "qdrant", "milvus"), default="chroma", help="持久化向量存储")
     clear_parser.add_argument("--dimension", type=int, default=32, help="Collection 向量维度")
     clear_parser.add_argument("--persist-path", type=Path, help="持久化目录；默认按存储类型选择")
     clear_parser.add_argument("--collection", default="lob-vector", help="Collection 名称")
@@ -331,14 +337,14 @@ def _add_embedder_arguments(parser: argparse.ArgumentParser) -> None:
 def _add_store_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--store",
-        choices=("memory", "chroma", "qdrant"),
+        choices=("memory", "chroma", "qdrant", "milvus"),
         default="memory",
         help="向量存储，默认 memory",
     )
     parser.add_argument(
         "--persist-path",
         type=Path,
-        help="持久化目录；Chroma 默认 .chroma，Qdrant 默认 .qdrant",
+        help="持久化目录；Chroma 默认 .chroma，Qdrant 默认 .qdrant，Milvus Lite 默认 .milvus/lob-vector.db",
     )
     parser.add_argument(
         "--collection",

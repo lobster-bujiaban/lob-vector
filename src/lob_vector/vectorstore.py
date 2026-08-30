@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import math
 import os
+import json
+import re
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -561,3 +563,225 @@ class QdrantVectorStore:
                     models.FieldCondition(key=condition.key, range=models.Range(**ranges[condition.operator]))
                 )
         return models.Filter(must=conditions)
+
+
+@dataclass(slots=True)
+class MilvusVectorStore:
+    """使用 Milvus Lite 或 Milvus Server 保存并检索向量。"""
+
+    dimension: int
+    uri: str = ".milvus/lob-vector.db"
+    collection_name: str = "lob_vector"
+    token: str | None = None
+    index_type: str = "AUTOINDEX"
+    index_params: dict[str, int] = field(default_factory=dict)
+    _client: object = field(init=False, repr=False)
+
+    @classmethod
+    def from_environment(
+        cls,
+        dimension: int,
+        *,
+        path: Path | str = Path(".milvus/lob-vector.db"),
+        collection_name: str = "lob_vector",
+    ) -> MilvusVectorStore:
+        mode = os.getenv("MILVUS_MODE", "lite").strip().lower()
+        if mode == "lite":
+            return cls(dimension, str(path), collection_name)
+        if mode != "server":
+            raise ValueError("MILVUS_MODE 只能是 lite 或 server")
+        uri = os.getenv("MILVUS_URI", "").strip()
+        if not uri:
+            raise RuntimeError("MILVUS_MODE=server 时必须设置 MILVUS_URI")
+        if not uri.startswith(("http://", "https://")):
+            raise ValueError("MILVUS_MODE=server 时 MILVUS_URI 必须是 HTTP(S) 地址")
+        return cls(
+            dimension,
+            uri,
+            collection_name,
+            token=os.getenv("MILVUS_TOKEN", "").strip() or None,
+        )
+
+    @property
+    def mode(self) -> str:
+        return "lite" if self.uri.endswith(".db") else "server"
+
+    def __post_init__(self) -> None:
+        if isinstance(self.dimension, bool) or not isinstance(self.dimension, int):
+            raise TypeError("dimension 必须是整数")
+        if self.dimension <= 0:
+            raise ValueError("dimension 必须大于 0")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", self.collection_name):
+            raise ValueError("Milvus Collection 名称只能包含字母、数字和下划线，且不能以数字开头")
+        try:
+            from pymilvus import MilvusClient
+        except ImportError as error:
+            raise RuntimeError("使用 Milvus 前请先执行 uv sync") from error
+
+        if self.mode == "lite":
+            Path(self.uri).parent.mkdir(parents=True, exist_ok=True)
+        self._client = MilvusClient(uri=self.uri, token=self.token)
+        if not self._client.has_collection(self.collection_name):
+            self._create_collection()
+        else:
+            description = self._client.describe_collection(self.collection_name)
+            vector_field = next(
+                field for field in description["fields"] if field["name"] == "vector"
+            )
+            stored_dimension = int(vector_field["params"]["dim"])
+            if stored_dimension != self.dimension:
+                raise ValueError(
+                    f"Milvus Collection 维度为 {stored_dimension}，当前 Embedder 为 {self.dimension}"
+                )
+        self._client.load_collection(self.collection_name)
+
+    def _create_collection(self) -> None:
+        from pymilvus import DataType, MilvusClient
+
+        schema = MilvusClient.create_schema(
+            auto_id=False,
+            enable_dynamic_field=False,
+        )
+        schema.add_field(
+            field_name="id",
+            datatype=DataType.VARCHAR,
+            is_primary=True,
+            max_length=512,
+        )
+        schema.add_field(
+            field_name="vector",
+            datatype=DataType.FLOAT_VECTOR,
+            dim=self.dimension,
+        )
+        schema.add_field(field_name="content", datatype=DataType.VARCHAR, max_length=65_535)
+        schema.add_field(
+            field_name="document_id", datatype=DataType.VARCHAR, max_length=2_048
+        )
+        schema.add_field(field_name="chunk_index", datatype=DataType.INT64)
+        schema.add_field(field_name="start", datatype=DataType.INT64)
+        schema.add_field(field_name="end", datatype=DataType.INT64)
+        schema.add_field(field_name="metadata", datatype=DataType.JSON)
+        indexes = MilvusClient.prepare_index_params()
+        indexes.add_index(
+            field_name="vector",
+            index_type=self.index_type,
+            metric_type="COSINE",
+            params=self.index_params,
+        )
+        self._client.create_collection(
+            collection_name=self.collection_name,
+            schema=schema,
+            index_params=indexes,
+        )
+        self._client.load_collection(self.collection_name)
+
+    def add(self, chunks: Sequence[Chunk], vectors: Sequence[Sequence[float]]) -> None:
+        self.upsert(chunks, vectors)
+
+    def upsert(self, chunks: Sequence[Chunk], vectors: Sequence[Sequence[float]]) -> None:
+        if len(chunks) != len(vectors):
+            raise ValueError("chunks 和 vectors 数量必须一致")
+        if not chunks:
+            return
+        rows = [
+            {
+                "id": chunk.id,
+                "vector": list(self._validate_vector(vector)),
+                "content": chunk.content,
+                "document_id": chunk.document_id,
+                "chunk_index": chunk.index,
+                "start": chunk.start,
+                "end": chunk.end,
+                "metadata": dict(chunk.metadata),
+            }
+            for chunk, vector in zip(chunks, vectors, strict=True)
+        ]
+        for start in range(0, len(rows), 500):
+            self._client.upsert(
+                collection_name=self.collection_name,
+                data=rows[start : start + 500],
+            )
+
+    def delete(self, ids: Sequence[str]) -> None:
+        if ids:
+            self._client.delete(collection_name=self.collection_name, ids=list(ids))
+
+    def clear(self) -> None:
+        self._client.drop_collection(self.collection_name)
+        self._create_collection()
+
+    def count(self) -> int:
+        return int(self._client.get_collection_stats(self.collection_name)["row_count"])
+
+    def search(
+        self,
+        query_vector: Sequence[float],
+        *,
+        top_k: int = 3,
+        metadata_filter: MetadataFilter | None = None,
+    ) -> list[SearchResult]:
+        if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k <= 0:
+            raise ValueError("top_k 必须是正整数")
+        if self.count() == 0:
+            return []
+        response = self._client.search(
+            collection_name=self.collection_name,
+            data=[list(self._validate_vector(query_vector))],
+            filter=self._filter_expression(metadata_filter),
+            limit=top_k,
+            output_fields=[
+                "id",
+                "content",
+                "document_id",
+                "chunk_index",
+                "start",
+                "end",
+                "metadata",
+            ],
+        )[0]
+        results = []
+        for rank, hit in enumerate(response, start=1):
+            entity = hit["entity"]
+            chunk = Chunk(
+                id=str(entity["id"]),
+                document_id=str(entity["document_id"]),
+                content=str(entity["content"]),
+                index=int(entity["chunk_index"]),
+                start=int(entity["start"]),
+                end=int(entity["end"]),
+                metadata=dict(entity["metadata"]),
+            )
+            results.append(
+                SearchResult(chunk=chunk, score=float(hit["distance"]), rank=rank)
+            )
+        return results
+
+    def close(self) -> None:
+        self._client.close()
+
+    def _validate_vector(self, vector: Sequence[float]) -> tuple[float, ...]:
+        if len(vector) != self.dimension:
+            raise ValueError(f"向量维度必须为 {self.dimension}，当前为 {len(vector)}")
+        values = tuple(float(value) for value in vector)
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("向量只能包含有限数值")
+        if not any(values):
+            raise ValueError("向量不能是零向量")
+        return values
+
+    @staticmethod
+    def _filter_expression(metadata_filter: MetadataFilter | None) -> str:
+        if metadata_filter is None or not metadata_filter.conditions:
+            return ""
+        operators = {"eq": "==", "ne": "!=", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
+        clauses = []
+        for condition in metadata_filter.conditions:
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", condition.key):
+                raise ValueError(f"Milvus Metadata 过滤字段名无效：{condition.key!r}")
+            if condition.value is None:
+                raise ValueError("Milvus 当前实验不支持 null Metadata 过滤")
+            value = json.dumps(condition.value, ensure_ascii=False)
+            clauses.append(
+                f'metadata["{condition.key}"] {operators[condition.operator]} {value}'
+            )
+        return " and ".join(clauses)

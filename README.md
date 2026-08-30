@@ -211,6 +211,48 @@ uv run lob-vector web
 快照卷。需要跨机器访问时，应放在 TLS 反向代理或私有网络之后，不要直接把 6333/6334
 暴露到公网。单节点 Compose 提供生产化运行基线，但不等同于高可用集群。
 
+### 使用 Milvus
+
+默认使用 Milvus Lite，不需要 Docker，数据保存在 `.milvus/lob-vector.db`：
+
+```dotenv
+MILVUS_MODE=lite
+```
+
+```bash
+uv run lob-vector index datasets/demo-knowledge-base/*.md \
+  --store milvus \
+  --collection demo_milvus
+
+uv run lob-vector search "登录凭据想不起来怎么办" \
+  --store milvus \
+  --collection demo_milvus
+```
+
+Lite 适合验证统一 `VectorStore`、持久化和 Metadata Filter。运行 FLAT、IVF_FLAT、HNSW
+索引对照时，切换到 Milvus Standalone：
+
+```dotenv
+MILVUS_MODE=server
+MILVUS_URI=http://127.0.0.1:19530
+MILVUS_TOKEN=
+```
+
+```bash
+docker compose --profile milvus up -d milvus
+docker compose --profile milvus ps
+uv run lob-vector web
+```
+
+Compose 会启动 Milvus 2.6 Standalone、etcd 和 MinIO。Milvus WebUI 位于
+<http://127.0.0.1:9091/webui/>。Stage 3 网页使用固定随机种子和相同查询，对照：
+
+- FLAT：全量扫描，作为 Recall@10 的精确基准。
+- IVF_FLAT：`nlist=128`、`nprobe=16`，观察先分桶后扫描的精度与延迟。
+- HNSW：`M=16`、`efConstruction=100`、`ef=64`，观察图索引的内存换延迟路径。
+
+页面同时展示 Proxy、Coordinator、Query Node、Data Node、etcd 和 MinIO 在查询与索引链路中的职责。
+
 ## 第一个里程碑
 
 导入 10 篇本地文档，手写余弦相似度与 Metadata Filter。输入问题后，返回最相关的 3 个 Chunk，并展示：

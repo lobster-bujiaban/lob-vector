@@ -35,6 +35,90 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  milvus-etcd:
+    profiles: ["milvus"]
+    image: quay.io/coreos/etcd:v3.5.25
+    container_name: lob-vector-milvus-etcd
+    restart: unless-stopped
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    command: >-
+      etcd -advertise-client-urls=http://milvus-etcd:2379
+      -listen-client-urls http://0.0.0.0:2379
+      --data-dir /etcd
+    volumes:
+      - milvus_etcd:/etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true
+
+  milvus-minio:
+    profiles: ["milvus"]
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    container_name: lob-vector-milvus-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ACCESS_KEY: ${MILVUS_MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MILVUS_MINIO_SECRET_KEY:-minioadmin}
+    command: minio server /minio_data --console-address ":9001"
+    ports:
+      - "127.0.0.1:${MILVUS_MINIO_PORT:-19000}:9000"
+      - "127.0.0.1:${MILVUS_MINIO_CONSOLE_PORT:-19001}:9001"
+    volumes:
+      - milvus_minio:/minio_data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true
+
+  milvus:
+    profiles: ["milvus"]
+    image: milvusdb/milvus:v2.6.22
+    container_name: lob-vector-milvus
+    command: ["milvus", "run", "standalone"]
+    restart: unless-stopped
+    environment:
+      ETCD_ENDPOINTS: milvus-etcd:2379
+      MINIO_ADDRESS: milvus-minio:9000
+      MINIO_ACCESS_KEY_ID: ${MILVUS_MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_ACCESS_KEY: ${MILVUS_MINIO_SECRET_KEY:-minioadmin}
+      MQ_TYPE: woodpecker
+    ports:
+      - "127.0.0.1:${MILVUS_PORT:-19530}:19530"
+      - "127.0.0.1:${MILVUS_WEBUI_PORT:-9091}:9091"
+    volumes:
+      - milvus_data:/var/lib/milvus
+    depends_on:
+      milvus-etcd:
+        condition: service_healthy
+      milvus-minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 3
+    stop_grace_period: 30s
+    mem_limit: 4g
+    cpus: 2.0
+    security_opt:
+      - seccomp:unconfined
+      - no-new-privileges:true
+
 volumes:
   qdrant_storage:
   qdrant_snapshots:
+  milvus_etcd:
+  milvus_minio:
+  milvus_data:

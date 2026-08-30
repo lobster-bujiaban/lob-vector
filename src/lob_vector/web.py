@@ -15,6 +15,7 @@ from typing import Any
 from .chunking import FixedSizeChunker
 from .embedding import BailianEmbedder, Embedder, HashEmbedder
 from .hnsw_experiment import run_hnsw_experiment
+from .milvus_experiment import run_milvus_index_experiment
 from .models import Chunk, Document, SearchResult
 from .vectorstore import ChromaVectorStore, MemoryVectorStore, MetadataCondition, MetadataFilter, QdrantVectorStore
 
@@ -445,7 +446,7 @@ class DemoHandler(BaseHTTPRequestHandler):
         self._send(HTTPStatus.OK, content, "text/html; charset=utf-8")
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path not in {"/api/chunk", "/api/search", "/api/compare", "/api/store-compare", "/api/qdrant-filter", "/api/hnsw-experiment"}:
+        if self.path not in {"/api/chunk", "/api/search", "/api/compare", "/api/store-compare", "/api/qdrant-filter", "/api/hnsw-experiment", "/api/milvus-index-experiment"}:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         try:
@@ -463,6 +464,11 @@ class DemoHandler(BaseHTTPRequestHandler):
                 result = _qdrant_filter(payload)
             elif self.path == "/api/hnsw-experiment":
                 result = run_hnsw_experiment(
+                    point_count=payload.get("point_count", 10_000),
+                    query_count=payload.get("query_count", 12),
+                )
+            elif self.path == "/api/milvus-index-experiment":
+                result = run_milvus_index_experiment(
                     point_count=payload.get("point_count", 10_000),
                     query_count=payload.get("query_count", 12),
                 )
