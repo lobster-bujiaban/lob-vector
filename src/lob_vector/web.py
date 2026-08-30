@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from http import HTTPStatus
@@ -313,8 +314,13 @@ def _qdrant_filter(payload: dict[str, Any]) -> dict[str, Any]:
         )
     )
 
-    store = QdrantVectorStore(32, Path(".qdrant") / "web-stage2", "stage2-permission-lab")
+    store = QdrantVectorStore.from_environment(
+        32,
+        path=Path(".qdrant") / "web-stage2",
+        collection_name="stage2-permission-lab",
+    )
     try:
+        storage_mode = store.mode
         store.clear()
         store.upsert(all_chunks, all_vectors)
         started = time.perf_counter()
@@ -346,6 +352,7 @@ def _qdrant_filter(payload: dict[str, Any]) -> dict[str, Any]:
     filtered_ids = {result.chunk.id for result in filtered}
     return {
         "query": query,
+        "storage_mode": storage_mode,
         "filter": {
             "tenant_id": tenant_id,
             "department": department,
@@ -445,6 +452,10 @@ class DemoHandler(BaseHTTPRequestHandler):
 def serve(host: str = "127.0.0.1", port: int = 8765) -> None:
     server = ThreadingHTTPServer((host, port), DemoHandler)
     print(f"LOB Vector 检索实验台：http://{host}:{port}")
+    if os.getenv("QDRANT_MODE", "local").strip().lower() == "server":
+        qdrant_url = os.getenv("QDRANT_URL", "").strip().rstrip("/")
+        if qdrant_url:
+            print(f"Qdrant 控制台：{qdrant_url}/dashboard")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -303,7 +304,42 @@ class QdrantVectorStore:
     dimension: int
     path: Path | str = Path(".qdrant")
     collection_name: str = "lob-vector"
+    url: str | None = None
+    api_key: str | None = None
     _client: object = field(init=False, repr=False)
+
+    @classmethod
+    def from_environment(
+        cls,
+        dimension: int,
+        *,
+        path: Path | str = Path(".qdrant"),
+        collection_name: str = "lob-vector",
+    ) -> QdrantVectorStore:
+        """根据 QDRANT_MODE 创建体验级本地存储或生产 Server 连接。"""
+        mode = os.getenv("QDRANT_MODE", "local").strip().lower()
+        if mode == "local":
+            return cls(dimension, path, collection_name)
+        if mode != "server":
+            raise ValueError("QDRANT_MODE 只能是 local 或 server")
+
+        url = os.getenv("QDRANT_URL", "").strip()
+        api_key = os.getenv("QDRANT_API_KEY", "").strip()
+        if not url:
+            raise RuntimeError("QDRANT_MODE=server 时必须设置 QDRANT_URL")
+        if not api_key:
+            raise RuntimeError("QDRANT_MODE=server 时必须设置 QDRANT_API_KEY")
+        return cls(
+            dimension,
+            path,
+            collection_name,
+            url=url,
+            api_key=api_key,
+        )
+
+    @property
+    def mode(self) -> str:
+        return "server" if self.url else "local"
 
     def __post_init__(self) -> None:
         if isinstance(self.dimension, bool) or not isinstance(self.dimension, int):
@@ -318,7 +354,10 @@ class QdrantVectorStore:
             raise RuntimeError("使用 Qdrant 前请先执行 uv sync") from error
 
         self.path = Path(self.path)
-        self._client = QdrantClient(path=str(self.path))
+        if self.url:
+            self._client = QdrantClient(url=self.url, api_key=self.api_key)
+        else:
+            self._client = QdrantClient(path=str(self.path))
         if not self._client.collection_exists(self.collection_name):
             self._client.create_collection(
                 collection_name=self.collection_name,
@@ -334,6 +373,7 @@ class QdrantVectorStore:
                 raise ValueError(
                     f"Qdrant Collection 维度为 {stored_dimension}，当前 Embedder 为 {self.dimension}"
                 )
+        self._ensure_payload_indexes()
 
     def add(self, chunks: Sequence[Chunk], vectors: Sequence[Sequence[float]]) -> None:
         self.upsert(chunks, vectors)
@@ -374,12 +414,26 @@ class QdrantVectorStore:
             collection_name=self.collection_name,
             vectors_config=models.VectorParams(size=self.dimension, distance=models.Distance.COSINE),
         )
+        self._ensure_payload_indexes()
 
     def count(self) -> int:
         return int(self._client.count(collection_name=self.collection_name, exact=True).count)
 
     def close(self) -> None:
         self._client.close()
+
+    def _ensure_payload_indexes(self) -> None:
+        if not self.url:
+            return
+        from qdrant_client import models
+
+        for field_name in ("tenant_id", "department", "permission"):
+            self._client.create_payload_index(
+                collection_name=self.collection_name,
+                field_name=field_name,
+                field_schema=models.PayloadSchemaType.KEYWORD,
+                wait=True,
+            )
 
     def search(
         self,

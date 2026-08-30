@@ -209,7 +209,7 @@ def _store(args: argparse.Namespace, dimension: int) -> VectorStore:
             collection_name=args.collection,
         )
     if args.store == "qdrant":
-        return QdrantVectorStore(
+        return QdrantVectorStore.from_environment(
             dimension=dimension,
             path=args.persist_path or Path(".qdrant"),
             collection_name=args.collection,

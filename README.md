@@ -165,6 +165,48 @@ uv run lob-vector clear --store qdrant --collection demo-kb
 
 Qdrant 默认持久化到 `.qdrant/`，支持与 Memory、Chroma 相同的 Metadata AND 组合过滤。
 
+### 使用 Qdrant Server
+
+`.env` 使用 `QDRANT_MODE` 显式切换模式。默认体验级配置无需启动容器，也不需要密钥：
+
+```dotenv
+QDRANT_MODE=local
+```
+
+此时数据保存在 `.qdrant/`，适合单进程学习。切换生产 Server 时必须同时配置 URL 和密钥：
+
+```dotenv
+QDRANT_MODE=server
+QDRANT_URL=http://127.0.0.1:6333
+QDRANT_API_KEY=替换成高强度随机密钥
+```
+
+`server` 模式缺少 URL 或密钥时，应用会直接拒绝连接。使用项目提供的 Docker Compose 启动服务：
+
+```bash
+cp .env.example .env
+# 将 QDRANT_API_KEY 替换为高强度随机值
+docker compose up -d qdrant
+docker compose ps
+```
+
+CLI 与 Web 实验台读取同一份 `.env`，因此切换 `QDRANT_MODE` 后重启应用即可切换后端。
+
+```bash
+uv run lob-vector index datasets/demo-knowledge-base/*.md \
+  --store qdrant \
+  --collection demo-kb \
+  --metadata tenant_id=tenant-a \
+  --metadata department=support \
+  --metadata permission=staff
+
+uv run lob-vector web
+```
+
+服务仅绑定本机 `127.0.0.1`，启用 API Key、健康检查、自动重启、资源限制、持久化数据卷和
+快照卷。需要跨机器访问时，应放在 TLS 反向代理或私有网络之后，不要直接把 6333/6334
+暴露到公网。单节点 Compose 提供生产化运行基线，但不等同于高可用集群。
+
 ## 第一个里程碑
 
 导入 10 篇本地文档，手写余弦相似度与 Metadata Filter。输入问题后，返回最相关的 3 个 Chunk，并展示：
