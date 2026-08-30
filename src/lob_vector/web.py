@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import statistics
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,6 +19,7 @@ from .generation import BailianChatGenerator, REFUSAL_TEXT
 from .hnsw_experiment import run_hnsw_experiment
 from .milvus_experiment import run_milvus_index_experiment
 from .models import Chunk, Document, SearchResult
+from .retrieval import BM25Retriever, ranking_metrics, reciprocal_rank_fusion, rerank
 from .vectorstore import ChromaVectorStore, MemoryVectorStore, MetadataCondition, MetadataFilter, MilvusVectorStore, QdrantVectorStore
 
 
@@ -437,6 +439,104 @@ def _rag_answer(payload: dict[str, Any]) -> dict[str, Any]:
         "chunk_size": 300,
         "overlap": 30,
     }
+
+
+_RETRIEVAL_EVALUATION = (
+    ("登录凭据想不起来，该怎样重新进入账号？", "01-account-security.md", "忘记密码"),
+    ("接口提示访问过于频繁，客户端接下来该怎么做？", "05-api-rate-limit.md", "请求限流"),
+    ("为什么内容再相似也不能返回其他客户的资料？", "07-tenant-permission.md", "检索隔离"),
+    ("热门数据刚失效，大量流量压到数据库怎么处理？", "06-cache-failures.md", "热点键失效"),
+    ("设备总是断开连接，需要检查哪些因素？", "04-device-offline.md", "设备频繁掉线"),
+    ("模型或提示词改完，怎么证明效果真的变好了？", "10-observability.md", "质量评估"),
+)
+
+
+def _retrieval_compare(payload: dict[str, Any]) -> dict[str, Any]:
+    query = payload.get("query", _RETRIEVAL_EVALUATION[0][0])
+    if not isinstance(query, str) or not query.strip():
+        raise ValueError("请输入检索问题")
+    provider = payload.get("embedder", "hash")
+    if provider not in {"hash", "bailian"}:
+        raise ValueError("embedder 只能是 hash 或 bailian")
+    prepared = {
+        "source_mode": "demo",
+        "embedder": provider,
+        "dimension": 1024 if provider == "bailian" else 32,
+        "chunk_size": 300,
+        "overlap": 30,
+    }
+    chunks, vectors, embedder = _prepare(prepared)
+    questions = [item[0] for item in _RETRIEVAL_EVALUATION]
+    all_questions = [query, *questions]
+    query_vectors = embedder.embed(all_questions)
+    vector_store = MemoryVectorStore(embedder.dimension)
+    vector_store.upsert(chunks, vectors)
+    bm25 = BM25Retriever(chunks)
+
+    rankings: dict[str, list[list[SearchResult]]] = {
+        "vector": [],
+        "bm25": [],
+        "hybrid": [],
+        "reranked": [],
+    }
+    latencies: dict[str, list[float]] = {name: [] for name in rankings}
+    current: dict[str, list[SearchResult]] = {}
+    for index, (question, vector) in enumerate(
+        zip(all_questions, query_vectors, strict=True)
+    ):
+        started = time.perf_counter()
+        vector_results = vector_store.search(vector, top_k=10)
+        latencies["vector"].append((time.perf_counter() - started) * 1000)
+        started = time.perf_counter()
+        bm25_results = bm25.search(question, top_k=10)
+        latencies["bm25"].append((time.perf_counter() - started) * 1000)
+        started = time.perf_counter()
+        hybrid_results = reciprocal_rank_fusion(
+            (vector_results, bm25_results), top_k=10
+        )
+        latencies["hybrid"].append((time.perf_counter() - started) * 1000)
+        started = time.perf_counter()
+        reranked_results = rerank(question, hybrid_results, top_k=10)
+        latencies["reranked"].append((time.perf_counter() - started) * 1000)
+        result_set = {
+            "vector": vector_results,
+            "bm25": bm25_results,
+            "hybrid": hybrid_results,
+            "reranked": reranked_results,
+        }
+        if index == 0:
+            current = result_set
+        else:
+            for name, results in result_set.items():
+                rankings[name].append(results)
+
+    expected = [(item[1], item[2]) for item in _RETRIEVAL_EVALUATION]
+
+    def serialize(results: list[SearchResult]) -> list[dict[str, Any]]:
+        return [
+            {
+                "rank": result.rank,
+                "score": result.score,
+                "content": result.chunk.content,
+                "source": result.chunk.metadata.get("source"),
+                "section": result.chunk.metadata.get("section"),
+            }
+            for result in results[:3]
+        ]
+
+    return {
+        "query": query,
+        "embedder": provider,
+        "evaluation_count": len(_RETRIEVAL_EVALUATION),
+        "results": {name: serialize(results) for name, results in current.items()},
+        "metrics": {
+            name: {
+                **ranking_metrics(results, expected, top_k=3),
+                "average_ms": statistics.mean(latencies[name]),
+            }
+            for name, results in rankings.items()
+        },
+    }
     retrieval_started = time.perf_counter()
     chunks, vectors, embedder = _prepare(prepared)
     if store_name == "chroma":
@@ -560,7 +660,7 @@ class DemoHandler(BaseHTTPRequestHandler):
         self._send(HTTPStatus.OK, content, "text/html; charset=utf-8")
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path not in {"/api/chunk", "/api/search", "/api/compare", "/api/store-compare", "/api/qdrant-filter", "/api/hnsw-experiment", "/api/milvus-index-experiment", "/api/rag-answer"}:
+        if self.path not in {"/api/chunk", "/api/search", "/api/compare", "/api/store-compare", "/api/qdrant-filter", "/api/hnsw-experiment", "/api/milvus-index-experiment", "/api/rag-answer", "/api/retrieval-compare"}:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         try:
@@ -588,6 +688,8 @@ class DemoHandler(BaseHTTPRequestHandler):
                 )
             elif self.path == "/api/rag-answer":
                 result = _rag_answer(payload)
+            elif self.path == "/api/retrieval-compare":
+                result = _retrieval_compare(payload)
             else:
                 result = _chunk(payload)
             self._send_json(HTTPStatus.OK, result)
