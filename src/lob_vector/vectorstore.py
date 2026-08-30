@@ -355,7 +355,11 @@ class QdrantVectorStore:
 
         self.path = Path(self.path)
         if self.url:
-            self._client = QdrantClient(url=self.url, api_key=self.api_key)
+            self._client = QdrantClient(
+                url=self.url,
+                api_key=self.api_key,
+                trust_env=False,
+            )
         else:
             self._client = QdrantClient(path=str(self.path))
         if not self._client.collection_exists(self.collection_name):
@@ -436,11 +440,17 @@ class QdrantVectorStore:
             return
         from qdrant_client import models
 
-        for field_name in ("tenant_id", "department", "permission"):
+        field_schemas = {
+            "tenant_id": models.PayloadSchemaType.KEYWORD,
+            "department": models.PayloadSchemaType.KEYWORD,
+            "permission": models.PayloadSchemaType.KEYWORD,
+            "created_at": models.PayloadSchemaType.DATETIME,
+        }
+        for field_name, field_schema in field_schemas.items():
             self._client.create_payload_index(
                 collection_name=self.collection_name,
                 field_name=field_name,
-                field_schema=models.PayloadSchemaType.KEYWORD,
+                field_schema=field_schema,
                 wait=True,
             )
 

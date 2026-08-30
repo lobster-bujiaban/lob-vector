@@ -51,7 +51,7 @@
 
 - [x] 阶段 0：手写内存向量检索
 - [x] 阶段 1：Chroma 与基础知识库
-- [ ] 阶段 2：Qdrant 与生产级过滤检索
+- [x] 阶段 2：Qdrant 与生产级过滤检索
 - [ ] 阶段 3：Milvus 索引实验与分布式架构
 - [ ] 阶段 4：完整 RAG 与引用溯源
 - [ ] 阶段 5：BM25、混合检索、重排与评估
@@ -164,6 +164,10 @@ uv run lob-vector clear --store qdrant --collection demo-kb
 ```
 
 Qdrant 默认持久化到 `.qdrant/`，支持与 Memory、Chroma 相同的 Metadata AND 组合过滤。
+
+生产 Server 模式下，Stage 2 网页还提供可复现的 HNSW 实验：固定随机种子生成向量，
+以 `exact=true` 的 Top 10 作为 Ground Truth，对比 `hnsw_ef=16/64/128` 的 Recall@10、
+平均延迟、P50 和 P95，并观察删除、恢复前后的 Point、索引与 Segment 状态。
 
 ### 使用 Qdrant Server
 

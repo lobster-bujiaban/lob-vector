@@ -14,6 +14,7 @@ from typing import Any
 
 from .chunking import FixedSizeChunker
 from .embedding import BailianEmbedder, Embedder, HashEmbedder
+from .hnsw_experiment import run_hnsw_experiment
 from .models import Chunk, Document, SearchResult
 from .vectorstore import ChromaVectorStore, MemoryVectorStore, MetadataCondition, MetadataFilter, QdrantVectorStore
 
@@ -381,7 +382,12 @@ def _qdrant_filter(payload: dict[str, Any]) -> dict[str, Any]:
         },
         "indexed_count": indexed_count,
         "payload_indexes": payload_indexes,
-        "expected_payload_indexes": ["tenant_id", "department", "permission"],
+        "expected_payload_indexes": [
+            "tenant_id",
+            "department",
+            "permission",
+            "created_at",
+        ],
         "tenant_counts": tenant_counts,
         "blocked_count": len(unfiltered_ids - filtered_ids),
         "safe": all(
@@ -439,7 +445,7 @@ class DemoHandler(BaseHTTPRequestHandler):
         self._send(HTTPStatus.OK, content, "text/html; charset=utf-8")
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path not in {"/api/chunk", "/api/search", "/api/compare", "/api/store-compare", "/api/qdrant-filter"}:
+        if self.path not in {"/api/chunk", "/api/search", "/api/compare", "/api/store-compare", "/api/qdrant-filter", "/api/hnsw-experiment"}:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         try:
@@ -455,6 +461,11 @@ class DemoHandler(BaseHTTPRequestHandler):
                 result = _store_compare(payload)
             elif self.path == "/api/qdrant-filter":
                 result = _qdrant_filter(payload)
+            elif self.path == "/api/hnsw-experiment":
+                result = run_hnsw_experiment(
+                    point_count=payload.get("point_count", 10_000),
+                    query_count=payload.get("query_count", 12),
+                )
             else:
                 result = _chunk(payload)
             self._send_json(HTTPStatus.OK, result)
