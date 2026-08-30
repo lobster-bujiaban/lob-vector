@@ -330,6 +330,7 @@ def _qdrant_filter(payload: dict[str, Any]) -> dict[str, Any]:
         filtered = store.search(query_vector, top_k=3, metadata_filter=metadata_filter)
         filtered_ms = (time.perf_counter() - started) * 1000
         indexed_count = store.count()
+        payload_indexes = store.payload_indexes()
     finally:
         store.close()
 
@@ -365,6 +366,11 @@ def _qdrant_filter(payload: dict[str, Any]) -> dict[str, Any]:
 
     unfiltered_ids = {result.chunk.id for result in unfiltered}
     filtered_ids = {result.chunk.id for result in filtered}
+    blocked = [result for result in unfiltered if result.chunk.id not in filtered_ids]
+    tenant_counts: dict[str, int] = {}
+    for chunk in all_chunks:
+        tenant = str(chunk.metadata.get("tenant_id"))
+        tenant_counts[tenant] = tenant_counts.get(tenant, 0) + 1
     return {
         "query": query,
         "storage_mode": storage_mode,
@@ -374,6 +380,9 @@ def _qdrant_filter(payload: dict[str, Any]) -> dict[str, Any]:
             "permission": permission,
         },
         "indexed_count": indexed_count,
+        "payload_indexes": payload_indexes,
+        "expected_payload_indexes": ["tenant_id", "department", "permission"],
+        "tenant_counts": tenant_counts,
         "blocked_count": len(unfiltered_ids - filtered_ids),
         "safe": all(
             result.chunk.metadata.get("tenant_id") == tenant_id
@@ -385,6 +394,7 @@ def _qdrant_filter(payload: dict[str, Any]) -> dict[str, Any]:
         "filtered_ms": filtered_ms,
         "chroma_ms": chroma_ms,
         "unfiltered": serialize(unfiltered),
+        "blocked": serialize(blocked),
         "filtered": serialize(filtered),
         "chroma_filtered": serialize(chroma_filtered),
         "same_filtered_top_k": [item.chunk.id for item in filtered]

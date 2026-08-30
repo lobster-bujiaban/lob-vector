@@ -422,6 +422,15 @@ class QdrantVectorStore:
     def close(self) -> None:
         self._client.close()
 
+    def payload_indexes(self) -> dict[str, str]:
+        """返回 Collection 中已实际建立的 Payload Index。"""
+        schema = self._client.get_collection(self.collection_name).payload_schema
+        indexes = {}
+        for field_name, field_schema in schema.items():
+            data_type = getattr(field_schema, "data_type", field_schema)
+            indexes[field_name] = str(getattr(data_type, "value", data_type))
+        return indexes
+
     def _ensure_payload_indexes(self) -> None:
         if not self.url:
             return
