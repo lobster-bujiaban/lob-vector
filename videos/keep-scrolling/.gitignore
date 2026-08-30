@@ -1,0 +1,4 @@
+narration.mp3
+beats/*.mp3
+beats/silence*.mp3
+frames/
