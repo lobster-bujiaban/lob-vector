@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
@@ -13,7 +14,7 @@ from typing import Any
 from .chunking import FixedSizeChunker
 from .embedding import BailianEmbedder, Embedder, HashEmbedder
 from .models import Chunk, Document, SearchResult
-from .vectorstore import ChromaVectorStore, MemoryVectorStore, MetadataCondition, MetadataFilter
+from .vectorstore import ChromaVectorStore, MemoryVectorStore, MetadataCondition, MetadataFilter, QdrantVectorStore
 
 
 _DATASETS_ROOT = Path(__file__).resolve().parents[2] / "datasets"
@@ -252,6 +253,119 @@ def _store_compare(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _qdrant_filter(payload: dict[str, Any]) -> dict[str, Any]:
+    query = payload.get("query", "登录凭据想不起来，该怎样重新进入账号？")
+    if not isinstance(query, str) or not query.strip():
+        raise ValueError("请输入查询问题")
+    tenant_id = str(payload.get("tenant_id", "tenant-a"))
+    department = str(payload.get("department", "support"))
+    permission = str(payload.get("permission", "staff"))
+
+    prepared = {
+        "source_mode": "demo",
+        "embedder": "hash",
+        "dimension": 32,
+        "chunk_size": 300,
+        "overlap": 30,
+    }
+    chunks, vectors, embedder = _prepare(prepared)
+    secured_chunks = [
+        Chunk(
+            id=f"tenant-a:{chunk.id}",
+            document_id=chunk.document_id,
+            content=chunk.content,
+            index=chunk.index,
+            start=chunk.start,
+            end=chunk.end,
+            metadata={
+                **dict(chunk.metadata),
+                "tenant_id": "tenant-a",
+                "department": "support",
+                "permission": "staff",
+            },
+        )
+        for chunk in chunks
+    ]
+    forbidden = Document(
+        id="tenant-b-secret",
+        content=(
+            f"{query}\n{query}\n{query}\n"
+            "这是 tenant-b 的内部账号恢复手册，包含高度相关但禁止跨租户访问的机密流程。"
+            "即使相似度最高，tenant-a 用户也绝不能召回本段。"
+        ),
+        metadata={
+            "source": "tenant-b/private-account-recovery.md",
+            "section": "内部账号恢复",
+            "tenant_id": "tenant-b",
+            "department": "security",
+            "permission": "admin",
+        },
+    )
+    forbidden_chunk = FixedSizeChunker(300, 30).split(forbidden)[0]
+    all_chunks = [forbidden_chunk, *secured_chunks]
+    all_vectors = [embedder.embed([forbidden_chunk.content])[0], *vectors]
+    query_vector = embedder.embed([query])[0]
+    metadata_filter = MetadataFilter(
+        (
+            MetadataCondition("tenant_id", "eq", tenant_id),
+            MetadataCondition("department", "eq", department),
+            MetadataCondition("permission", "eq", permission),
+        )
+    )
+
+    store = QdrantVectorStore(32, Path(".qdrant") / "web-stage2", "stage2-permission-lab")
+    try:
+        store.clear()
+        store.upsert(all_chunks, all_vectors)
+        started = time.perf_counter()
+        unfiltered = store.search(query_vector, top_k=3)
+        unfiltered_ms = (time.perf_counter() - started) * 1000
+        started = time.perf_counter()
+        filtered = store.search(query_vector, top_k=3, metadata_filter=metadata_filter)
+        filtered_ms = (time.perf_counter() - started) * 1000
+        indexed_count = store.count()
+    finally:
+        store.close()
+
+    def serialize(results: list[SearchResult]) -> list[dict[str, Any]]:
+        return [
+            {
+                "rank": result.rank,
+                "score": result.score,
+                "id": result.chunk.id,
+                "content": result.chunk.content,
+                "source": result.chunk.metadata.get("source"),
+                "tenant_id": result.chunk.metadata.get("tenant_id"),
+                "department": result.chunk.metadata.get("department"),
+                "permission": result.chunk.metadata.get("permission"),
+            }
+            for result in results
+        ]
+
+    unfiltered_ids = {result.chunk.id for result in unfiltered}
+    filtered_ids = {result.chunk.id for result in filtered}
+    return {
+        "query": query,
+        "filter": {
+            "tenant_id": tenant_id,
+            "department": department,
+            "permission": permission,
+        },
+        "indexed_count": indexed_count,
+        "blocked_count": len(unfiltered_ids - filtered_ids),
+        "safe": all(
+            result.chunk.metadata.get("tenant_id") == tenant_id
+            and result.chunk.metadata.get("department") == department
+            and result.chunk.metadata.get("permission") == permission
+            for result in filtered
+        ),
+        "unfiltered_ms": unfiltered_ms,
+        "filtered_ms": filtered_ms,
+        "unfiltered": serialize(unfiltered),
+        "filtered": serialize(filtered),
+    }
+
+
 def _dataset(source_mode: str = "demo") -> dict[str, Any]:
     documents = _documents({"source_mode": source_mode})
     sources: dict[str, dict[str, Any]] = {}
@@ -289,7 +403,7 @@ class DemoHandler(BaseHTTPRequestHandler):
         self._send(HTTPStatus.OK, content, "text/html; charset=utf-8")
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path not in {"/api/chunk", "/api/search", "/api/compare", "/api/store-compare"}:
+        if self.path not in {"/api/chunk", "/api/search", "/api/compare", "/api/store-compare", "/api/qdrant-filter"}:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         try:
@@ -303,6 +417,8 @@ class DemoHandler(BaseHTTPRequestHandler):
                 result = _compare(payload)
             elif self.path == "/api/store-compare":
                 result = _store_compare(payload)
+            elif self.path == "/api/qdrant-filter":
+                result = _qdrant_filter(payload)
             else:
                 result = _chunk(payload)
             self._send_json(HTTPStatus.OK, result)

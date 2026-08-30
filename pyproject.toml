@@ -12,6 +12,7 @@ license = { text = "Apache-2.0" }
 authors = [{ name = "lobster-bujiaban" }]
 dependencies = [
     "chromadb>=1.0,<2",
+    "qdrant-client>=1.15,<2",
 ]
 
 [project.scripts]

@@ -143,6 +143,28 @@ uv run lob-vector clear --collection demo-kb
 Chroma 默认持久化到 `.chroma/`，该目录已被 Git 忽略。Memory 与 Chroma 都实现统一
 `VectorStore` 的 `upsert`、`delete`、`clear`、`count` 和 `search` 能力。
 
+使用 Qdrant 本地模式建立并查询持久化知识库：
+
+```bash
+uv run lob-vector index datasets/demo-knowledge-base/*.md \
+  --store qdrant \
+  --collection demo-kb \
+  --metadata tenant_id=tenant-a \
+  --metadata department=support \
+  --metadata permission=staff
+
+uv run lob-vector search "登录凭据想不起来怎么办" \
+  --store qdrant \
+  --collection demo-kb \
+  --where tenant_id=tenant-a \
+  --where department=support \
+  --where permission=staff
+
+uv run lob-vector clear --store qdrant --collection demo-kb
+```
+
+Qdrant 默认持久化到 `.qdrant/`，支持与 Memory、Chroma 相同的 Metadata AND 组合过滤。
+
 ## 第一个里程碑
 
 导入 10 篇本地文档，手写余弦相似度与 Metadata Filter。输入问题后，返回最相关的 3 个 Chunk，并展示：

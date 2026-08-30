@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol, Sequence, runtime_checkable
@@ -293,3 +294,197 @@ class ChromaVectorStore:
             for condition in metadata_filter.conditions
         ]
         return clauses[0] if len(clauses) == 1 else {"$and": clauses}
+
+
+@dataclass(slots=True)
+class QdrantVectorStore:
+    """使用 Qdrant 本地持久化模式保存并检索调用方提供的向量。"""
+
+    dimension: int
+    path: Path | str = Path(".qdrant")
+    collection_name: str = "lob-vector"
+    _client: object = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.dimension, bool) or not isinstance(self.dimension, int):
+            raise TypeError("dimension 必须是整数")
+        if self.dimension <= 0:
+            raise ValueError("dimension 必须大于 0")
+        if not self.collection_name.strip():
+            raise ValueError("collection_name 不能为空")
+        try:
+            from qdrant_client import QdrantClient, models
+        except ImportError as error:
+            raise RuntimeError("使用 Qdrant 前请先执行 uv sync") from error
+
+        self.path = Path(self.path)
+        self._client = QdrantClient(path=str(self.path))
+        if not self._client.collection_exists(self.collection_name):
+            self._client.create_collection(
+                collection_name=self.collection_name,
+                vectors_config=models.VectorParams(
+                    size=self.dimension,
+                    distance=models.Distance.COSINE,
+                ),
+            )
+        else:
+            collection = self._client.get_collection(self.collection_name)
+            stored_dimension = collection.config.params.vectors.size
+            if stored_dimension != self.dimension:
+                raise ValueError(
+                    f"Qdrant Collection 维度为 {stored_dimension}，当前 Embedder 为 {self.dimension}"
+                )
+
+    def add(self, chunks: Sequence[Chunk], vectors: Sequence[Sequence[float]]) -> None:
+        self.upsert(chunks, vectors)
+
+    def upsert(self, chunks: Sequence[Chunk], vectors: Sequence[Sequence[float]]) -> None:
+        if len(chunks) != len(vectors):
+            raise ValueError("chunks 和 vectors 数量必须一致")
+        if not chunks:
+            return
+        from qdrant_client import models
+
+        points = [
+            models.PointStruct(
+                id=self._point_id(chunk.id),
+                vector=list(self._validate_vector(vector)),
+                payload=self._payload(chunk),
+            )
+            for chunk, vector in zip(chunks, vectors, strict=True)
+        ]
+        self._client.upsert(collection_name=self.collection_name, points=points, wait=True)
+
+    def delete(self, ids: Sequence[str]) -> None:
+        if not ids:
+            return
+        from qdrant_client import models
+
+        self._client.delete(
+            collection_name=self.collection_name,
+            points_selector=models.PointIdsList(points=[self._point_id(item) for item in ids]),
+            wait=True,
+        )
+
+    def clear(self) -> None:
+        from qdrant_client import models
+
+        self._client.delete_collection(self.collection_name)
+        self._client.create_collection(
+            collection_name=self.collection_name,
+            vectors_config=models.VectorParams(size=self.dimension, distance=models.Distance.COSINE),
+        )
+
+    def count(self) -> int:
+        return int(self._client.count(collection_name=self.collection_name, exact=True).count)
+
+    def close(self) -> None:
+        self._client.close()
+
+    def search(
+        self,
+        query_vector: Sequence[float],
+        *,
+        top_k: int = 3,
+        metadata_filter: MetadataFilter | None = None,
+    ) -> list[SearchResult]:
+        if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k <= 0:
+            raise ValueError("top_k 必须是正整数")
+        if self.count() == 0:
+            return []
+        response = self._client.query_points(
+            collection_name=self.collection_name,
+            query=list(self._validate_vector(query_vector)),
+            query_filter=self._filter(metadata_filter),
+            limit=top_k,
+            with_payload=True,
+        )
+        results = []
+        for rank, point in enumerate(response.points, start=1):
+            payload = dict(point.payload or {})
+            chunk = Chunk(
+                id=str(payload.pop("_lob_chunk_id")),
+                document_id=str(payload.pop("_lob_document_id")),
+                content=str(payload.pop("_lob_content")),
+                index=int(payload.pop("_lob_index")),
+                start=int(payload.pop("_lob_start")),
+                end=int(payload.pop("_lob_end")),
+                metadata=payload,
+            )
+            results.append(SearchResult(chunk=chunk, score=float(point.score), rank=rank))
+        return results
+
+    def _validate_vector(self, vector: Sequence[float]) -> tuple[float, ...]:
+        if len(vector) != self.dimension:
+            raise ValueError(f"向量维度必须为 {self.dimension}，当前为 {len(vector)}")
+        values = tuple(float(value) for value in vector)
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("向量只能包含有限数值")
+        if not any(values):
+            raise ValueError("向量不能是零向量")
+        return values
+
+    @staticmethod
+    def _point_id(chunk_id: str) -> str:
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"lob-vector:{chunk_id}"))
+
+    @staticmethod
+    def _payload(chunk: Chunk) -> dict[str, str | int | float | bool | None]:
+        payload = dict(chunk.metadata)
+        payload.update(
+            {
+                "_lob_chunk_id": chunk.id,
+                "_lob_document_id": chunk.document_id,
+                "_lob_content": chunk.content,
+                "_lob_index": chunk.index,
+                "_lob_start": chunk.start,
+                "_lob_end": chunk.end,
+            }
+        )
+        return payload
+
+    @staticmethod
+    def _filter(metadata_filter: MetadataFilter | None) -> object | None:
+        if metadata_filter is None or not metadata_filter.conditions:
+            return None
+        from qdrant_client import models
+
+        conditions = []
+        for condition in metadata_filter.conditions:
+            if condition.operator == "eq":
+                if condition.value is None:
+                    conditions.append(
+                        models.IsNullCondition(is_null=models.PayloadField(key=condition.key))
+                    )
+                else:
+                    conditions.append(
+                        models.FieldCondition(key=condition.key, match=models.MatchValue(value=condition.value))
+                    )
+            elif condition.operator == "ne":
+                if condition.value is None:
+                    excluded = models.IsNullCondition(
+                        is_null=models.PayloadField(key=condition.key)
+                    )
+                else:
+                    excluded = models.FieldCondition(
+                        key=condition.key,
+                        match=models.MatchValue(value=condition.value),
+                    )
+                conditions.append(
+                    models.Filter(must_not=[excluded])
+                )
+            else:
+                if isinstance(condition.value, bool) or not isinstance(
+                    condition.value, (int, float)
+                ):
+                    raise ValueError("Qdrant 范围过滤值必须是数字")
+                ranges = {
+                    "gt": {"gt": condition.value},
+                    "gte": {"gte": condition.value},
+                    "lt": {"lt": condition.value},
+                    "lte": {"lte": condition.value},
+                }
+                conditions.append(
+                    models.FieldCondition(key=condition.key, range=models.Range(**ranges[condition.operator]))
+                )
+        return models.Filter(must=conditions)

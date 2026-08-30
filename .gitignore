@@ -9,4 +9,5 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .chroma/
+.qdrant/
 *.mp4

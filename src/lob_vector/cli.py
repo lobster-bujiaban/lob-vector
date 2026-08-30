@@ -11,8 +11,8 @@ from typing import Sequence
 from . import __version__
 from .chunking import FixedSizeChunker
 from .embedding import BailianEmbedder, Embedder, HashEmbedder
-from .models import Chunk, Document
-from .vectorstore import ChromaVectorStore, MemoryVectorStore, MetadataCondition, MetadataFilter, VectorStore
+from .models import Chunk, Document, MetadataValue
+from .vectorstore import ChromaVectorStore, MemoryVectorStore, MetadataCondition, MetadataFilter, QdrantVectorStore, VectorStore
 from .web import serve
 
 
@@ -29,15 +29,15 @@ def _load_dotenv(path: Path = Path(".env")) -> None:
             os.environ.setdefault(key.strip(), value.strip().strip("'\""))
 
 
-def _metadata(values: Sequence[str]) -> dict[str, str]:
-    metadata: dict[str, str] = {}
+def _metadata(values: Sequence[str]) -> dict[str, MetadataValue]:
+    metadata: dict[str, MetadataValue] = {}
     for item in values:
         key, separator, value = item.partition("=")
         if not separator or not key.strip():
             raise argparse.ArgumentTypeError(
                 f"metadata 必须使用 key=value 格式，当前值：{item!r}"
             )
-        metadata[key.strip()] = value
+        metadata[key.strip()] = _scalar(value)
     return metadata
 
 
@@ -159,7 +159,7 @@ def _search_command(args: argparse.Namespace) -> None:
 def _index_command(args: argparse.Namespace) -> None:
     embedder = _embedder(args)
     store = _store(args, embedder.dimension)
-    chunks = _file_chunks(args.files, args.chunk_size, args.overlap)
+    chunks = _file_chunks(args.files, args.chunk_size, args.overlap, _metadata(args.metadata))
     store.upsert(chunks, embedder.embed([chunk.content for chunk in chunks]))
     print(
         json.dumps(
@@ -178,23 +178,24 @@ def _index_command(args: argparse.Namespace) -> None:
 
 
 def _clear_command(args: argparse.Namespace) -> None:
-    store = ChromaVectorStore(
-        dimension=args.dimension,
-        path=args.persist_path,
-        collection_name=args.collection,
-    )
+    store = _store(args, args.dimension)
     store.clear()
-    print(json.dumps({"store": "chroma", "collection": args.collection, "total_chunks": 0}, ensure_ascii=False))
+    print(json.dumps({"store": args.store, "collection": args.collection, "total_chunks": 0}, ensure_ascii=False))
 
 
-def _file_chunks(files: Sequence[Path], chunk_size: int, overlap: int) -> list[Chunk]:
+def _file_chunks(
+    files: Sequence[Path],
+    chunk_size: int,
+    overlap: int,
+    metadata: dict[str, MetadataValue] | None = None,
+) -> list[Chunk]:
     chunker = FixedSizeChunker(chunk_size=chunk_size, overlap=overlap)
     chunks = []
     for path in files:
         document = Document(
             id=str(path),
             content=path.read_text(encoding="utf-8"),
-            metadata={"source": str(path)},
+            metadata={**(metadata or {}), "source": str(path)},
         )
         chunks.extend(chunker.split(document))
     return chunks
@@ -204,7 +205,13 @@ def _store(args: argparse.Namespace, dimension: int) -> VectorStore:
     if args.store == "chroma":
         return ChromaVectorStore(
             dimension=dimension,
-            path=args.persist_path,
+            path=args.persist_path or Path(".chroma"),
+            collection_name=args.collection,
+        )
+    if args.store == "qdrant":
+        return QdrantVectorStore(
+            dimension=dimension,
+            path=args.persist_path or Path(".qdrant"),
             collection_name=args.collection,
         )
     return MemoryVectorStore(dimension=dimension)
@@ -272,14 +279,22 @@ def build_parser() -> argparse.ArgumentParser:
     index_parser.add_argument("files", nargs="+", type=Path, help="需要索引的 UTF-8 文本文件")
     index_parser.add_argument("--chunk-size", type=int, default=500, help="Chunk 最大字符数")
     index_parser.add_argument("--overlap", type=int, default=50, help="相邻 Chunk 重叠字符数")
+    index_parser.add_argument(
+        "--metadata",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="为本批文档附加 Metadata，可重复传入",
+    )
     _add_embedder_arguments(index_parser)
     _add_store_arguments(index_parser)
     index_parser.set_defaults(handler=_index_command)
 
-    clear_parser = subparsers.add_parser("clear", help="清空 Chroma Collection")
+    clear_parser = subparsers.add_parser("clear", help="清空持久化 Collection")
+    clear_parser.add_argument("--store", choices=("chroma", "qdrant"), default="chroma", help="持久化向量存储")
     clear_parser.add_argument("--dimension", type=int, default=32, help="Collection 向量维度")
-    clear_parser.add_argument("--persist-path", type=Path, default=Path(".chroma"), help="Chroma 持久化目录")
-    clear_parser.add_argument("--collection", default="lob-vector", help="Chroma Collection 名称")
+    clear_parser.add_argument("--persist-path", type=Path, help="持久化目录；默认按存储类型选择")
+    clear_parser.add_argument("--collection", default="lob-vector", help="Collection 名称")
     clear_parser.set_defaults(handler=_clear_command)
 
     web_parser = subparsers.add_parser("web", help="启动可视化分块实验台")
@@ -316,20 +331,19 @@ def _add_embedder_arguments(parser: argparse.ArgumentParser) -> None:
 def _add_store_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--store",
-        choices=("memory", "chroma"),
+        choices=("memory", "chroma", "qdrant"),
         default="memory",
         help="向量存储，默认 memory",
     )
     parser.add_argument(
         "--persist-path",
         type=Path,
-        default=Path(".chroma"),
-        help="Chroma 持久化目录，默认 .chroma",
+        help="持久化目录；Chroma 默认 .chroma，Qdrant 默认 .qdrant",
     )
     parser.add_argument(
         "--collection",
         default="lob-vector",
-        help="Chroma Collection 名称",
+        help="Collection 名称",
     )
 
 
