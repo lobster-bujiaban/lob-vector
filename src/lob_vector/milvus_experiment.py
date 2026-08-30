@@ -28,7 +28,7 @@ def run_milvus_index_experiment(
     if not uri.startswith(("http://", "https://")):
         raise ValueError("MILVUS_MODE=server 时 MILVUS_URI 必须是 HTTP(S) 地址")
 
-    from pymilvus import MilvusClient
+    from pymilvus import DataType, MilvusClient
 
     client = MilvusClient(
         uri=uri,
@@ -62,15 +62,24 @@ def run_milvus_index_experiment(
                 metric_type="COSINE",
                 params=build_params,
             )
+            schema = MilvusClient.create_schema(
+                auto_id=False,
+                enable_dynamic_field=False,
+            )
+            schema.add_field(
+                field_name="id",
+                datatype=DataType.INT64,
+                is_primary=True,
+            )
+            schema.add_field(
+                field_name="vector",
+                datatype=DataType.FLOAT_VECTOR,
+                dim=dimension,
+            )
             build_started = time.perf_counter()
             client.create_collection(
                 collection_name=collection,
-                dimension=dimension,
-                primary_field_name="id",
-                id_type="int",
-                vector_field_name="vector",
-                metric_type="COSINE",
-                auto_id=False,
+                schema=schema,
                 index_params=indexes,
             )
             for start in range(0, point_count, 500):
@@ -84,6 +93,14 @@ def run_milvus_index_experiment(
             client.flush(collection)
             client.load_collection(collection)
             build_ms = (time.perf_counter() - build_started) * 1000
+            index_name = client.list_indexes(collection)[0]
+            actual_index = client.describe_index(collection, index_name)
+            actual_index_type = str(actual_index.get("index_type"))
+            if actual_index_type != index_type:
+                raise RuntimeError(
+                    f"Milvus 实际创建了 {actual_index_type}，预期为 {index_type}"
+                )
+            load_state = client.get_load_state(collection)["state"]
 
             ids, latencies = _search_batch(
                 client,
@@ -102,6 +119,11 @@ def run_milvus_index_experiment(
             rows.append(
                 {
                     "index_type": index_type,
+                    "collection": collection,
+                    "actual_index_type": actual_index_type,
+                    "index_state": str(actual_index.get("state")),
+                    "indexed_rows": int(actual_index.get("indexed_rows", 0)),
+                    "load_state": str(getattr(load_state, "name", load_state)),
                     "build_params": build_params,
                     "search_params": search_params,
                     "build_ms": build_ms,

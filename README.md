@@ -52,7 +52,7 @@
 - [x] 阶段 0：手写内存向量检索
 - [x] 阶段 1：Chroma 与基础知识库
 - [x] 阶段 2：Qdrant 与生产级过滤检索
-- [ ] 阶段 3：Milvus 索引实验与分布式架构
+- [x] 阶段 3：Milvus 索引实验与分布式架构
 - [ ] 阶段 4：完整 RAG 与引用溯源
 - [ ] 阶段 5：BM25、混合检索、重排与评估
 - [ ] 阶段 6：LightRAG / RAGFlow 对照实验
@@ -252,6 +252,33 @@ Compose 会启动 Milvus 2.6 Standalone、etcd 和 MinIO。Milvus WebUI 位于
 - HNSW：`M=16`、`efConstruction=100`、`ef=64`，观察图索引的内存换延迟路径。
 
 页面同时展示 Proxy、Coordinator、Query Node、Data Node、etcd 和 MinIO 在查询与索引链路中的职责。
+
+### 运行完整 RAG 与引用实验
+
+Stage 4 使用百炼 Embedding 检索典型知识库，再由 `qwen-plus` 严格基于证据生成回答：
+
+```dotenv
+DASHSCOPE_API_KEY=你的百炼_API_Key
+DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+DASHSCOPE_CHAT_MODEL=qwen-plus
+```
+
+```bash
+uv run lob-vector web
+```
+
+进入 Stage 4 后点击“检索并生成”。页面会在发送知识库内容到百炼前要求确认，并展示：
+
+- TopK 候选数量与最低证据分数。
+- 最终进入 Prompt 的证据、来源文件、章节和字符位置。
+- 回答中的 `[1]` 引用与对应原文。
+- 检索、生成耗时和 Token 用量。
+- 高阈值或知识库外问题的拒答结果。
+
+网页默认通过统一 `VectorStore` 使用 Qdrant 完成检索；`/api/rag-answer` 也支持将 `store`
+设置为 `memory`、`chroma`、`qdrant` 或 `milvus`，用于验证生成层不依赖具体向量数据库。
+
+程序只接受指向当前证据编号的引用；模型未给出有效引用时，即使生成了文本也会降级为“根据当前知识库资料，无法回答这个问题”。
 
 ## 第一个里程碑
 

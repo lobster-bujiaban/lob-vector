@@ -14,10 +14,11 @@ from typing import Any
 
 from .chunking import FixedSizeChunker
 from .embedding import BailianEmbedder, Embedder, HashEmbedder
+from .generation import BailianChatGenerator, REFUSAL_TEXT
 from .hnsw_experiment import run_hnsw_experiment
 from .milvus_experiment import run_milvus_index_experiment
 from .models import Chunk, Document, SearchResult
-from .vectorstore import ChromaVectorStore, MemoryVectorStore, MetadataCondition, MetadataFilter, QdrantVectorStore
+from .vectorstore import ChromaVectorStore, MemoryVectorStore, MetadataCondition, MetadataFilter, MilvusVectorStore, QdrantVectorStore
 
 
 _DATASETS_ROOT = Path(__file__).resolve().parents[2] / "datasets"
@@ -37,7 +38,13 @@ def _embedder(payload: dict[str, Any], provider: str | None = None) -> Embedder:
         dimension = payload.get("dimension", 1024)
         if dimension == 32:  # Web 表单从 Hash 切换百炼时使用推荐维度。
             dimension = 1024
-        return BailianEmbedder(dimension=dimension)
+        return BailianEmbedder(
+            dimension=dimension,
+            base_url=os.getenv(
+                "DASHSCOPE_BASE_URL",
+                "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            ),
+        )
     if selected != "hash":
         raise ValueError(f"不支持的 Embedder：{selected}")
     return HashEmbedder(payload.get("dimension", 32))
@@ -409,6 +416,113 @@ def _qdrant_filter(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _rag_answer(payload: dict[str, Any]) -> dict[str, Any]:
+    question = payload.get("question")
+    if not isinstance(question, str) or not question.strip():
+        raise ValueError("请输入需要回答的问题")
+    top_k = payload.get("top_k", 4)
+    if not isinstance(top_k, int) or isinstance(top_k, bool) or not 1 <= top_k <= 8:
+        raise ValueError("top_k 必须是 1 到 8 的整数")
+    min_score = payload.get("min_score", 0.2)
+    if not isinstance(min_score, (int, float)) or isinstance(min_score, bool):
+        raise ValueError("min_score 必须是数字")
+    store_name = payload.get("store", "qdrant")
+    if store_name not in {"memory", "chroma", "qdrant", "milvus"}:
+        raise ValueError("RAG store 只能是 memory、chroma、qdrant 或 milvus")
+
+    prepared = {
+        "source_mode": "demo",
+        "embedder": "bailian",
+        "dimension": 1024,
+        "chunk_size": 300,
+        "overlap": 30,
+    }
+    retrieval_started = time.perf_counter()
+    chunks, vectors, embedder = _prepare(prepared)
+    if store_name == "chroma":
+        store = ChromaVectorStore(
+            embedder.dimension,
+            Path(".chroma") / "web-stage4",
+            "stage4-rag",
+        )
+    elif store_name == "qdrant":
+        store = QdrantVectorStore.from_environment(
+            embedder.dimension,
+            path=Path(".qdrant") / "web-stage4",
+            collection_name="stage4-rag",
+        )
+    elif store_name == "milvus":
+        store = MilvusVectorStore.from_environment(
+            embedder.dimension,
+            path=Path(".milvus/stage4-rag.db"),
+            collection_name="stage4_rag",
+        )
+    else:
+        store = MemoryVectorStore(embedder.dimension)
+    try:
+        store.clear()
+        store.upsert(chunks, vectors)
+        candidates = store.search(embedder.embed([question])[0], top_k=top_k)
+    finally:
+        close = getattr(store, "close", None)
+        if close is not None:
+            close()
+    evidence = [result for result in candidates if result.score >= float(min_score)]
+    retrieval_ms = (time.perf_counter() - retrieval_started) * 1000
+
+    generation_started = time.perf_counter()
+    if evidence:
+        generator = BailianChatGenerator(
+            model=os.getenv("DASHSCOPE_CHAT_MODEL", "qwen-plus"),
+            base_url=os.getenv(
+                "DASHSCOPE_BASE_URL",
+                "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            ),
+        )
+        answer, usage = generator.generate(question, evidence)
+    else:
+        answer, usage = REFUSAL_TEXT, {}
+    generation_ms = (time.perf_counter() - generation_started) * 1000
+    cited_numbers = sorted(
+        {
+            int(number)
+            for number in re.findall(r"\[(\d+)\]", answer)
+            if 1 <= int(number) <= len(evidence)
+        }
+    )
+    if answer != REFUSAL_TEXT and not cited_numbers:
+        answer = REFUSAL_TEXT
+    return {
+        "question": question,
+        "store": store_name,
+        "answer": answer,
+        "refused": answer == REFUSAL_TEXT,
+        "top_k": top_k,
+        "min_score": min_score,
+        "candidate_count": len(candidates),
+        "evidence_count": len(evidence),
+        "retrieval_ms": retrieval_ms,
+        "generation_ms": generation_ms,
+        "usage": usage,
+        "cited_numbers": cited_numbers,
+        "evidence": [
+            {
+                "number": number,
+                "score": result.score,
+                "content": result.chunk.content,
+                "source": result.chunk.metadata.get("source", result.chunk.document_id),
+                "section": result.chunk.metadata.get(
+                    "section", f"Chunk {result.chunk.index}"
+                ),
+                "start": result.chunk.start,
+                "end": result.chunk.end,
+                "cited": number in cited_numbers,
+            }
+            for number, result in enumerate(evidence, start=1)
+        ],
+    }
+
+
 def _dataset(source_mode: str = "demo") -> dict[str, Any]:
     documents = _documents({"source_mode": source_mode})
     sources: dict[str, dict[str, Any]] = {}
@@ -446,7 +560,7 @@ class DemoHandler(BaseHTTPRequestHandler):
         self._send(HTTPStatus.OK, content, "text/html; charset=utf-8")
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path not in {"/api/chunk", "/api/search", "/api/compare", "/api/store-compare", "/api/qdrant-filter", "/api/hnsw-experiment", "/api/milvus-index-experiment"}:
+        if self.path not in {"/api/chunk", "/api/search", "/api/compare", "/api/store-compare", "/api/qdrant-filter", "/api/hnsw-experiment", "/api/milvus-index-experiment", "/api/rag-answer"}:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         try:
@@ -472,6 +586,8 @@ class DemoHandler(BaseHTTPRequestHandler):
                     point_count=payload.get("point_count", 10_000),
                     query_count=payload.get("query_count", 12),
                 )
+            elif self.path == "/api/rag-answer":
+                result = _rag_answer(payload)
             else:
                 result = _chunk(payload)
             self._send_json(HTTPStatus.OK, result)
@@ -502,6 +618,15 @@ def serve(host: str = "127.0.0.1", port: int = 8765) -> None:
         qdrant_url = os.getenv("QDRANT_URL", "").strip().rstrip("/")
         if qdrant_url:
             print(f"Qdrant 控制台：{qdrant_url}/dashboard")
+    if os.getenv("MILVUS_MODE", "lite").strip().lower() == "server":
+        print(
+            "Milvus 控制台："
+            f"http://127.0.0.1:{os.getenv('MILVUS_WEBUI_PORT', '9091')}/webui/"
+        )
+        print(
+            "MinIO 控制台："
+            f"http://127.0.0.1:{os.getenv('MILVUS_MINIO_CONSOLE_PORT', '19001')}"
+        )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
