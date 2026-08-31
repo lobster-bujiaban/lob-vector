@@ -55,7 +55,8 @@
 - [x] 阶段 3：Milvus 索引实验与分布式架构
 - [x] 阶段 4：完整 RAG 与引用溯源
 - [x] 阶段 5：BM25、混合检索、重排与评估
-- [ ] 阶段 6：LightRAG / RAGFlow 对照实验
+- [x] 阶段 6：LightRAG 图检索实验
+- [x] 阶段 7：RAGFlow 平台能力与最终选型
 
 详细任务和验收标准见 [实施计划](./docs/IMPLEMENTATION_PLAN.md)。
 
