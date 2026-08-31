@@ -652,9 +652,15 @@ def _lightrag_index(_: dict[str, Any]) -> dict[str, Any]:
         f"来源：{document.metadata['source']}\n章节：{document.metadata['section']}\n\n{document.content}"
         for document in documents
     ]
+    file_sources = [
+        f"{Path(str(document.metadata['source'])).stem}__section_{index:03d}.md"
+        for index, document in enumerate(documents, start=1)
+    ]
     client = LightRAGClient.from_env()
     health = client.health()
-    accepted = client.insert_texts(texts)
+    if health.get("pipeline_busy") or health.get("pipeline_active"):
+        raise ValueError("LightRAG 正在处理上一批文档，请等待控制台显示完成后再索引")
+    accepted = client.insert_texts(texts, file_sources)
     return {
         "document_count": len(texts),
         "character_count": sum(map(len, texts)),
@@ -672,6 +678,11 @@ def _lightrag_compare(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(question, str) or len(question.strip()) < 3:
         raise ValueError("请输入至少 3 个字符的问题")
     client = LightRAGClient.from_env()
+    health = client.health()
+    if health.get("pipeline_busy") or health.get("pipeline_active"):
+        raise ValueError(
+            "LightRAG 仍在抽取实体和关系，本次对照已阻止；请等待索引完成后重试"
+        )
     rows = []
     for mode in ("naive", "local", "global", "mix"):
         result = client.query(question.strip(), mode)

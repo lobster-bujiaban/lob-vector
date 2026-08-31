@@ -27,10 +27,18 @@ class LightRAGClient:
     def health(self) -> dict[str, Any]:
         return self._request("GET", "/health")
 
-    def insert_texts(self, texts: list[str]) -> dict[str, Any]:
+    def insert_texts(
+        self, texts: list[str], file_sources: list[str]
+    ) -> dict[str, Any]:
         if not texts:
             raise ValueError("没有可写入 LightRAG 的文档")
-        return self._request("POST", "/documents/texts", {"texts": texts})
+        if len(file_sources) != len(texts) or len(set(file_sources)) != len(texts):
+            raise ValueError("每段文本必须对应一个唯一的 LightRAG 来源文件名")
+        return self._request(
+            "POST",
+            "/documents/texts",
+            {"texts": texts, "file_sources": file_sources},
+        )
 
     def query(self, question: str, mode: str) -> dict[str, Any]:
         if mode not in {"naive", "local", "global", "hybrid", "mix"}:
