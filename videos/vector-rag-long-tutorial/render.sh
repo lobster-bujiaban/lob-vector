@@ -21,6 +21,11 @@ DURATION="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$DIR/nar
 ffmpeg -y \
   -f lavfi -i "color=c=0x101412:s=1080x1920:r=30:d=$DURATION" \
   -i "$DIR/narration.mp3" \
+  -loop 1 -i "$DIR/assets/semantic-map.png" \
+  -loop 1 -i "$DIR/assets/chunking.png" \
+  -loop 1 -i "$DIR/assets/hybrid-retrieval.png" \
+  -loop 1 -i "$DIR/assets/permission-filter.png" \
+  -loop 1 -i "$DIR/assets/rag-pipeline.png" \
   -filter_complex_script "$DIR/video-filter.txt" \
   -map '[v]' -map 1:a \
   -c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p \
