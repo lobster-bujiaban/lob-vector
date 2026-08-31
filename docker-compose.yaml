@@ -116,9 +116,45 @@ services:
       - seccomp:unconfined
       - no-new-privileges:true
 
+  lightrag:
+    profiles: ["lightrag"]
+    image: ghcr.io/hkuds/lightrag:latest
+    container_name: lob-vector-lightrag
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "9621"
+      WORKING_DIR: /app/data/rag_storage
+      INPUT_DIR: /app/data/inputs
+      LLM_BINDING: openai
+      LLM_MODEL: ${DASHSCOPE_CHAT_MODEL:-qwen-plus}
+      LLM_BINDING_HOST: ${DASHSCOPE_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      LLM_BINDING_API_KEY: ${DASHSCOPE_API_KEY:?请在 .env 中设置 DASHSCOPE_API_KEY}
+      EMBEDDING_BINDING: openai
+      EMBEDDING_MODEL: text-embedding-v4
+      EMBEDDING_BINDING_HOST: ${DASHSCOPE_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      EMBEDDING_BINDING_API_KEY: ${DASHSCOPE_API_KEY:?请在 .env 中设置 DASHSCOPE_API_KEY}
+      EMBEDDING_DIM: "1024"
+      SUMMARY_LANGUAGE: Chinese
+      LIGHTRAG_API_KEY: ${LIGHTRAG_API_KEY:?请在 .env 中设置 LIGHTRAG_API_KEY}
+    ports:
+      - "127.0.0.1:${LIGHTRAG_PORT:-9621}:9621"
+    volumes:
+      - lightrag_storage:/app/data/rag_storage
+      - lightrag_inputs:/app/data/inputs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    mem_limit: 4g
+    cpus: 2.0
+    security_opt:
+      - no-new-privileges:true
+
 volumes:
   qdrant_storage:
   qdrant_snapshots:
   milvus_etcd:
   milvus_minio:
   milvus_data:
+  lightrag_storage:
+  lightrag_inputs:

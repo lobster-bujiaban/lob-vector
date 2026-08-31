@@ -292,6 +292,21 @@ Stage 5 使用 6 个带预期来源和章节的固定问题，对照四种策略
 页面同时输出单题 Top 3，以及固定评估集的 Recall@3、MRR、NDCG 和平均检索耗时。
 混合或重排没有超过最佳单路结果时，页面会保留真实指标，不预设“策略越复杂一定越好”。
 
+### 运行 LightRAG 图检索对照
+
+Stage 6 通过独立 LightRAG Server 对照四种查询模式：`naive` 只查文本 Chunk，`local` 查具体实体及邻接关系，`global` 查跨文档关系，`mix` 合并图检索与文本检索。
+
+先在 `.env` 中设置 `DASHSCOPE_API_KEY`、`LIGHTRAG_API_KEY`，并将 `LIGHTRAG_MODE` 改为 `server`，然后启动：
+
+```bash
+docker compose --profile lightrag up -d lightrag
+uv run lob-vector web
+```
+
+打开 `http://127.0.0.1:8765/#chapter-6`，先点击“索引典型知识库”。实体关系抽取是异步模型任务，可在 `http://127.0.0.1:9621/webui` 查看进度；处理完成后再运行四模式对照。
+
+这一实验会真实调用百炼：建图阶段需要逐段抽取实体与关系，查询阶段每种模式也会调用模型。页面在外发资料或问题前都会要求确认。LightRAG 端口只绑定本机，并要求 `X-API-Key`，不要把空密钥或控制台直接暴露到公网。
+
 ## 第一个里程碑
 
 导入 10 篇本地文档，手写余弦相似度与 Metadata Filter。输入问题后，返回最相关的 3 个 Chunk，并展示：

@@ -17,6 +17,7 @@ from .chunking import FixedSizeChunker
 from .embedding import BailianEmbedder, Embedder, HashEmbedder
 from .generation import BailianChatGenerator, REFUSAL_TEXT
 from .hnsw_experiment import run_hnsw_experiment
+from .lightrag_client import LightRAGClient
 from .milvus_experiment import run_milvus_index_experiment
 from .models import Chunk, Document, SearchResult
 from .retrieval import BM25Retriever, ranking_metrics, reciprocal_rank_fusion, rerank
@@ -645,6 +646,47 @@ def _dataset(source_mode: str = "demo") -> dict[str, Any]:
     }
 
 
+def _lightrag_index(_: dict[str, Any]) -> dict[str, Any]:
+    documents = _documents({"source_mode": "demo"})
+    texts = [
+        f"来源：{document.metadata['source']}\n章节：{document.metadata['section']}\n\n{document.content}"
+        for document in documents
+    ]
+    client = LightRAGClient.from_env()
+    health = client.health()
+    accepted = client.insert_texts(texts)
+    return {
+        "document_count": len(texts),
+        "character_count": sum(map(len, texts)),
+        "health": {
+            key: health.get(key)
+            for key in ("status", "core_version", "api_version", "pipeline_busy")
+        },
+        "accepted": accepted,
+        "note": "LightRAG 会异步抽取实体和关系；控制台显示全部文档处理完成后再运行查询对照。",
+    }
+
+
+def _lightrag_compare(payload: dict[str, Any]) -> dict[str, Any]:
+    question = payload.get("question", "多个系统出现故障时，限流、缓存和可观测性之间有什么关系？")
+    if not isinstance(question, str) or len(question.strip()) < 3:
+        raise ValueError("请输入至少 3 个字符的问题")
+    client = LightRAGClient.from_env()
+    rows = []
+    for mode in ("naive", "local", "global", "mix"):
+        result = client.query(question.strip(), mode)
+        references = result.get("references") or []
+        rows.append(
+            {
+                "mode": mode,
+                "answer": str(result.get("response", "")),
+                "elapsed_ms": result["elapsed_ms"],
+                "references": references if isinstance(references, list) else [],
+            }
+        )
+    return {"question": question.strip(), "rows": rows}
+
+
 class DemoHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         if self.path in {"/api/dataset", "/api/dataset/demo"}:
@@ -660,7 +702,7 @@ class DemoHandler(BaseHTTPRequestHandler):
         self._send(HTTPStatus.OK, content, "text/html; charset=utf-8")
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path not in {"/api/chunk", "/api/search", "/api/compare", "/api/store-compare", "/api/qdrant-filter", "/api/hnsw-experiment", "/api/milvus-index-experiment", "/api/rag-answer", "/api/retrieval-compare"}:
+        if self.path not in {"/api/chunk", "/api/search", "/api/compare", "/api/store-compare", "/api/qdrant-filter", "/api/hnsw-experiment", "/api/milvus-index-experiment", "/api/rag-answer", "/api/retrieval-compare", "/api/lightrag-index", "/api/lightrag-compare"}:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         try:
@@ -690,6 +732,10 @@ class DemoHandler(BaseHTTPRequestHandler):
                 result = _rag_answer(payload)
             elif self.path == "/api/retrieval-compare":
                 result = _retrieval_compare(payload)
+            elif self.path == "/api/lightrag-index":
+                result = _lightrag_index(payload)
+            elif self.path == "/api/lightrag-compare":
+                result = _lightrag_compare(payload)
             else:
                 result = _chunk(payload)
             self._send_json(HTTPStatus.OK, result)
@@ -729,6 +775,9 @@ def serve(host: str = "127.0.0.1", port: int = 8765) -> None:
             "MinIO 控制台："
             f"http://127.0.0.1:{os.getenv('MILVUS_MINIO_CONSOLE_PORT', '19001')}"
         )
+    if os.getenv("LIGHTRAG_MODE", "disabled").strip().lower() == "server":
+        light_url = os.getenv("LIGHTRAG_URL", "http://127.0.0.1:9621").rstrip("/")
+        print(f"LightRAG 控制台：{light_url}/webui")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
