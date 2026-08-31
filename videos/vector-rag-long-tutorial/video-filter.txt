@@ -119,13 +119,64 @@ drawtext=fontfile='/System/Library/Fonts/STHeiti Medium.ttc':text='证据和评�
 drawtext=fontfile='/System/Library/Fonts/STHeiti Medium.ttc':text='才负责让答案可信':fontcolor=white:fontsize=62:x=(w-text_w)/2:y=900:enable='gte(t,366.048)',
 drawtext=fontfile='/System/Library/Fonts/STHeiti Medium.ttc':text='能观察 · 能验证 · 能拒绝犯错':fontcolor=0xFFC86B:fontsize=43:x=(w-text_w)/2:y=1280:enable='gte(t,366.85)',
 fade=t=in:st=0:d=0.4[slides];
-[2:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1[semantic];
-[3:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1[chunking];
-[4:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1[hybrid];
-[5:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1[permission];
-[6:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1[pipeline];
-[slides][semantic]overlay=0:0:enable='between(t,84.42,108.48)'[s1];
-[s1][chunking]overlay=0:0:enable='between(t,108.48,129.82)'[s2];
-[s2][hybrid]overlay=0:0:enable='between(t,129.82,172.69)'[s3];
-[s3][permission]overlay=0:0:enable='between(t,176.95,206.93)'[s4];
-[s4][pipeline]overlay=0:0:enable='between(t,235.25,266.94)'[v]
+[2:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,split=3[semDog0][semApple0][semFull];
+[semDog0]crop=1080:900:0:0,pad=1080:1920:0:420:color=0x101412[semDog];
+[semApple0]crop=1080:900:0:1020,pad=1080:1920:0:420:color=0x101412[semApple];
+[3:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,split=3[chunkBad0][chunkGood0][chunkFull];
+[chunkBad0]crop=1080:1020:0:0,pad=1080:1920:0:380:color=0x101412[chunkBad];
+[chunkGood0]crop=1080:900:0:1020,pad=1080:1920:0:430:color=0x101412[chunkGood];
+[4:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,split=3[hybridInput0][hybridRank0][hybridFull];
+[hybridInput0]crop=1080:850:0:0,pad=1080:1920:0:430:color=0x101412[hybridInput];
+[hybridRank0]crop=1080:1050:0:650,pad=1080:1920:0:360:color=0x101412[hybridRank];
+[5:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,split=3[tenantRooms0][tenantGate0][tenantFull];
+[tenantRooms0]crop=1080:850:0:0,pad=1080:1920:0:430:color=0x101412[tenantRooms];
+[tenantGate0]crop=1080:1050:0:650,pad=1080:1920:0:350:color=0x101412[tenantGate];
+[6:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,split=3[pipeInput0][pipeEvidence0][pipeFull];
+[pipeInput0]crop=1080:900:0:0,pad=1080:1920:0:410:color=0x101412[pipeInput];
+[pipeEvidence0]crop=1080:1100:0:600,pad=1080:1920:0:330:color=0x101412[pipeEvidence];
+[slides][semDog]overlay=0:0:enable='between(t,84.42,93.08)'[o1];
+[o1][semApple]overlay=0:0:enable='between(t,93.08,98.61)'[o2];
+[o2][semFull]overlay=0:0:enable='between(t,98.61,108.48)'[o3];
+[o3][chunkBad]overlay=0:0:enable='between(t,108.48,118.9)'[o4];
+[o4][chunkGood]overlay=0:0:enable='between(t,118.9,123.92)'[o5];
+[o5][chunkFull]overlay=0:0:enable='between(t,123.92,129.82)'[o6];
+[o6][hybridInput]overlay=0:0:enable='between(t,129.82,149.82)'[o7];
+[o7][hybridRank]overlay=0:0:enable='between(t,149.82,163.41)'[o8];
+[o8][hybridFull]overlay=0:0:enable='between(t,163.41,172.69)'[o9];
+[o9][tenantRooms]overlay=0:0:enable='between(t,180.24,191)'[o10];
+[o10][tenantGate]overlay=0:0:enable='between(t,191,201)'[o11];
+[o11][tenantFull]overlay=0:0:enable='between(t,201,206.93)'[o12];
+[o12][pipeInput]overlay=0:0:enable='between(t,235.25,245)'[o13];
+[o13][pipeEvidence]overlay=0:0:enable='between(t,245,256)'[o14];
+[o14][pipeFull]overlay=0:0:enable='between(t,256,266.94)',
+drawbox=x=65:y=130:w=950:h=250:color=0x101412@0.90:t=fill:enable='between(t,84.42,93.08)',
+drawtext=fontfile='/System/Library/Fonts/STHeiti Medium.ttc':text='幼犬患病处理指南.md':fontcolor=0x92E6B3:fontsize=46:x=(w-text_w)/2:y=175:enable='between(t,84.42,93.08)',
+drawtext=fontfile='/System/Library/Fonts/STHeiti Medium.ttc':text='小狗生病怎么办.txt':fontcolor=white:fontsize=43:x=(w-text_w)/2:y=270:enable='between(t,86.52,93.08)',
+drawbox=x=65:y=130:w=950:h=250:color=0x101412@0.90:t=fill:enable='between(t,93.08,98.61)',
+drawtext=fontfile='/System/Library/Fonts/STHeiti Medium.ttc':text='苹果手机发布会.txt':fontcolor=0xFFC86B:fontsize=44:x=(w-text_w)/2:y=175:enable='between(t,93.08,98.61)',
+drawtext=fontfile='/System/Library/Fonts/STHeiti Medium.ttc':text='苹果营养成分表.pdf':fontcolor=0xFF8E84:fontsize=44:x=(w-text_w)/2:y=270:enable='between(t,93.08,98.61)',
+drawbox=x=65:y=120:w=950:h=255:color=0x101412@0.90:t=fill:enable='between(t,108.48,118.9)',
+drawtext=fontfile='/System/Library/Fonts/STHeiti Medium.ttc':text='退款规则.pdf  +  发票说明.docx':fontcolor=0xFF8E84:fontsize=40:x=(w-text_w)/2:y=170:enable='between(t,108.48,118.9)',
+drawtext=fontfile='/System/Library/Fonts/STHeiti Medium.ttc':text='一个 Chunk 混进 3 个主题':fontcolor=white:fontsize=42:x=(w-text_w)/2:y=270:enable='between(t,108.48,118.9)',
+drawbox=x=65:y=120:w=950:h=255:color=0x101412@0.90:t=fill:enable='between(t,118.9,123.92)',
+drawtext=fontfile='/System/Library/Fonts/STHeiti Medium.ttc':text='退款 · 发票 · 安全':fontcolor=0x92E6B3:fontsize=48:x=(w-text_w)/2:y=170:enable='between(t,118.9,123.92)',
+drawtext=fontfile='/System/Library/Fonts/STHeiti Medium.ttc':text='分别切块，边界保留少量重叠':fontcolor=white:fontsize=39:x=(w-text_w)/2:y=275:enable='between(t,118.9,123.92)',
+drawbox=x=65:y=120:w=950:h=230:color=0x101412@0.90:t=fill:enable='between(t,129.82,149.82)',
+drawtext=fontfile='/System/Library/Fonts/STHeiti Medium.ttc':text='向量候选  +  BM25 候选':fontcolor=white:fontsize=48:x=(w-text_w)/2:y=175:enable='between(t,129.82,149.82)',
+drawtext=fontfile='/System/Library/Fonts/STHeiti Medium.ttc':text='接口错误码 429.md':fontcolor=0x63B3FF:fontsize=38:x=(w-text_w)/2:y=270:enable='between(t,136,149.82)',
+drawbox=x=65:y=120:w=950:h=230:color=0x101412@0.90:t=fill:enable='between(t,149.82,163.41)',
+drawtext=fontfile='/System/Library/Fonts/STHeiti Medium.ttc':text='RRF 合并两份排行榜':fontcolor=0xFFC86B:fontsize=48:x=(w-text_w)/2:y=175:enable='between(t,149.82,163.41)',
+drawtext=fontfile='/System/Library/Fonts/STHeiti Medium.ttc':text='Reranker 把正确证据移到顶部':fontcolor=0x92E6B3:fontsize=38:x=(w-text_w)/2:y=270:enable='between(t,155,163.41)',
+drawbox=x=65:y=120:w=950:h=255:color=0x101412@0.90:t=fill:enable='between(t,180.24,191)',
+drawtext=fontfile='/System/Library/Fonts/STHeiti Medium.ttc':text='租户 A／退款制度.pdf':fontcolor=0x92E6B3:fontsize=46:x=(w-text_w)/2:y=170:enable='between(t,180.24,191)',
+drawtext=fontfile='/System/Library/Fonts/STHeiti Medium.ttc':text='租户 B／机密合同.docx':fontcolor=0x63B3FF:fontsize=43:x=(w-text_w)/2:y=270:enable='between(t,182.5,191)',
+drawbox=x=65:y=120:w=950:h=230:color=0x101412@0.90:t=fill:enable='between(t,191,201)',
+drawtext=fontfile='/System/Library/Fonts/STHeiti Medium.ttc':text='先检查 tenant_id 和 permission':fontcolor=0xFFC86B:fontsize=39:x=(w-text_w)/2:y=170:enable='between(t,191,201)',
+drawtext=fontfile='/System/Library/Fonts/STHeiti Medium.ttc':text='非法文件在检索前被拦截':fontcolor=0xFF8E84:fontsize=42:x=(w-text_w)/2:y=270:enable='between(t,194,201)',
+drawbox=x=65:y=120:w=950:h=250:color=0x101412@0.90:t=fill:enable='between(t,235.25,245)',
+drawtext=fontfile='/System/Library/Fonts/STHeiti Medium.ttc':text='用户问题 → 权限过滤':fontcolor=0x92E6B3:fontsize=48:x=(w-text_w)/2:y=170:enable='between(t,235.25,245)',
+drawtext=fontfile='/System/Library/Fonts/STHeiti Medium.ttc':text='向量检索 + 关键词检索':fontcolor=white:fontsize=43:x=(w-text_w)/2:y=275:enable='between(t,238,245)',
+drawbox=x=65:y=120:w=950:h=250:color=0x101412@0.90:t=fill:enable='between(t,245,256)',
+drawtext=fontfile='/System/Library/Fonts/STHeiti Medium.ttc':text='证据 [1] 退款规则.pdf · 第 3 页':fontcolor=0x92E6B3:fontsize=37:x=(w-text_w)/2:y=170:enable='between(t,245,256)',
+drawtext=fontfile='/System/Library/Fonts/STHeiti Medium.ttc':text='证据 [2] 客服流程.md · 退款章节':fontcolor=0x63B3FF:fontsize=37:x=(w-text_w)/2:y=275:enable='between(t,248,256)',
+subtitles=filename='videos/vector-rag-long-tutorial/captions.vtt':fontsdir='/System/Library/Fonts':force_style='FontName=Heiti SC,FontSize=9,PrimaryColour=&H00FFFFFF,OutlineColour=&HCC000000,BorderStyle=3,Outline=1,Shadow=0,Alignment=2,MarginV=18'[v]
